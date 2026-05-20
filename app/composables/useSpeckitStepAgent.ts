@@ -37,6 +37,7 @@ export type SpeckitStepAgentArgs = {
 export type SpeckitStepAgent = {
   session: Ref<ActiveSession | null>;
   saveState: Ref<SaveState>;
+  pendingSave: Ref<boolean>;
   isStreaming: Ref<boolean>;
   sendMessage: (text: string) => Promise<void>;
   cancel: () => void;
@@ -162,6 +163,7 @@ export function useSpeckitStepAgent(
   return {
     session: computed(() => session.session) as Ref<ActiveSession | null>,
     saveState: computed(() => session.saveState) as Ref<SaveState>,
+    pendingSave: computed(() => session.pendingSave) as Ref<boolean>,
     isStreaming,
     sendMessage,
     cancel,

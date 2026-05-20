@@ -63,6 +63,7 @@
     "@pinia/testing": "^1.0.3",
     "@tailwindcss/typography": "^0.5.19",
     "@types/pg": "^8.20.0",
+    "@vitejs/plugin-vue": "^6.0.7",
     "@vue/language-core": "^3.2.7",
     "drizzle-kit": "^0.31.10",
     "happy-dom": "^20.9.0",
