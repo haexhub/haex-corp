@@ -55,12 +55,17 @@ function remove(id: string) {
   <div class="space-y-6">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-semibold">Speckit agent</h1>
+        <h1 class="text-2xl font-semibold">Speckit browser models</h1>
         <p class="mt-1 max-w-prose text-sm text-muted-foreground">
-          Provider identities live in this browser only. They never reach
-          the Specifyr server. Set one active to use it as the model for
-          the Speckit chat. Each device needs its own setup — there is
-          no cross-device sync.
+          Provider identities for the browser-side Speckit chat. Keys live
+          in this browser only and never reach the Specifyr server. Set one
+          active to use it as the model for Speckit chat. Each device needs
+          its own setup — there is no cross-device sync. For Hermes agents,
+          use
+          <NuxtLink to="/settings/me/llm" class="underline hover:text-foreground">
+            Hermes credentials
+          </NuxtLink>
+          instead.
         </p>
       </div>
       <Button

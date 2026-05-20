@@ -77,11 +77,16 @@ const anthropicOauth = computed(
 
     <h1 class="mt-2 flex items-center gap-2 text-2xl font-semibold">
       <KeyRound class="size-6 opacity-80" />
-      Personal LLM credentials
+      Hermes credentials (personal)
     </h1>
     <p class="mt-1 text-sm text-muted-foreground">
-      API keys you add here are encrypted at rest and used by your agent runs.
-      Org-shared credentials are managed under each org's settings.
+      API keys for Hermes agents you run personally. Encrypted at rest on the
+      Specifyr server. For browser-side Speckit chat, use
+      <NuxtLink to="/settings/speckit-agent" class="underline hover:text-foreground">
+        Speckit browser models
+      </NuxtLink>
+      instead. Org-shared Hermes credentials are managed under each org's
+      settings.
     </p>
 
     <AuthAnthropicOAuthCard

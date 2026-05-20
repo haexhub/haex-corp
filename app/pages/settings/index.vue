@@ -57,10 +57,10 @@ const { me, isDevAuth, logout, devLogin } = useMe();
         >
           <KeyRound class="mt-0.5 size-5 shrink-0 opacity-80" />
           <div>
-            <div class="font-medium">LLM credentials</div>
+            <div class="font-medium">Hermes credentials (personal)</div>
             <div class="mt-0.5 text-sm text-muted-foreground">
-              Manage API keys for Anthropic / OpenAI / Google. Stored
-              AES-256-GCM encrypted.
+              API keys for Hermes agents you run personally. Anthropic /
+              OpenAI / Google / OpenRouter, AES-256-GCM encrypted at rest.
             </div>
           </div>
         </NuxtLink>
@@ -72,10 +72,10 @@ const { me, isDevAuth, logout, devLogin } = useMe();
         >
           <MessageSquareCode class="mt-0.5 size-5 shrink-0 opacity-80" />
           <div>
-            <div class="font-medium">Speckit agent</div>
+            <div class="font-medium">Speckit browser models</div>
             <div class="mt-0.5 text-sm text-muted-foreground">
-              Browser-side LLM provider identities. Keys stay in this
-              browser; the Specifyr server never sees them.
+              Browser-side LLM provider identities for the Speckit chat.
+              Keys stay in this browser; the Specifyr server never sees them.
             </div>
           </div>
         </NuxtLink>
