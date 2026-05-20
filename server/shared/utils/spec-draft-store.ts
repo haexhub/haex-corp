@@ -164,6 +164,114 @@ export async function getDraftWithFiles(
   };
 }
 
+export interface FindOrCreateStepDraftInput {
+  projectId: string;
+  ownerUserId: string;
+  stepId: string;
+  baseVersion: number;
+  initialTitle: string;
+}
+
+export type FindOrCreateStepDraftResult = DraftWithFiles & {
+  created: boolean;
+};
+
+/**
+ * Look up the caller's open draft for (project, user, stepId); create
+ * one if none exists. Used by the step-chat surface (one draft per
+ * (project, user, step), enforced by the `byProjectOwnerStep` partial
+ * unique index).
+ *
+ * Race-handling: SELECT then INSERT in a tx. If a concurrent caller
+ * raced us into INSERT under the unique index, the INSERT throws — we
+ * re-SELECT and return that row. New drafts start with empty files +
+ * empty conversation.
+ */
+export async function findOrCreateStepDraft(
+  input: FindOrCreateStepDraftInput,
+): Promise<FindOrCreateStepDraftResult> {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_URL not configured");
+
+  return db.transaction(async (tx) => {
+    async function selectOpen(): Promise<typeof specDrafts.$inferSelect | null> {
+      const [row] = await tx
+        .select()
+        .from(specDrafts)
+        .where(
+          and(
+            eq(specDrafts.projectId, input.projectId),
+            eq(specDrafts.ownerUserId, input.ownerUserId),
+            eq(specDrafts.stepId, input.stepId),
+            eq(specDrafts.status, "draft"),
+          ),
+        )
+        .limit(1);
+      return row ?? null;
+    }
+
+    const existing = await selectOpen();
+    if (existing) {
+      return {
+        id: existing.id,
+        title: existing.title,
+        baseVersion: existing.baseVersion,
+        status: existing.status as "draft" | "published",
+        createdAt: existing.createdAt,
+        updatedAt: existing.updatedAt,
+        publishedAt: existing.publishedAt,
+        conversation: existing.conversation as unknown[],
+        files: [],
+        created: false,
+      };
+    }
+
+    let inserted;
+    try {
+      [inserted] = await tx
+        .insert(specDrafts)
+        .values({
+          projectId: input.projectId,
+          ownerUserId: input.ownerUserId,
+          stepId: input.stepId,
+          title: input.initialTitle,
+          baseVersion: input.baseVersion,
+          conversation: [],
+        })
+        .returning();
+    } catch (err) {
+      // Concurrent caller won the race under the partial unique index.
+      const raced = await selectOpen();
+      if (!raced) throw err;
+      return {
+        id: raced.id,
+        title: raced.title,
+        baseVersion: raced.baseVersion,
+        status: raced.status as "draft" | "published",
+        createdAt: raced.createdAt,
+        updatedAt: raced.updatedAt,
+        publishedAt: raced.publishedAt,
+        conversation: raced.conversation as unknown[],
+        files: [],
+        created: false,
+      };
+    }
+    if (!inserted) throw new Error("draft insert returned nothing");
+    return {
+      id: inserted.id,
+      title: inserted.title,
+      baseVersion: inserted.baseVersion,
+      status: inserted.status as "draft" | "published",
+      createdAt: inserted.createdAt,
+      updatedAt: inserted.updatedAt,
+      publishedAt: inserted.publishedAt,
+      conversation: inserted.conversation as unknown[],
+      files: [],
+      created: true,
+    };
+  });
+}
+
 export interface PatchDraftInput {
   title?: string;
   files?: DraftFileInput[];
