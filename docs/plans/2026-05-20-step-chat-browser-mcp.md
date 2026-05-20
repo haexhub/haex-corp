@@ -227,6 +227,9 @@ Remaining for the 5a build plan:
 
 ## Related documents
 
+- [`2026-05-21-step-chat-browser-mcp-build.md`](2026-05-21-step-chat-browser-mcp-build.md)
+  — task-by-task **build plan** for Phase 5a (executable via
+  `superpowers:executing-plans`)
 - `docs/plans/2026-05-18-browser-mcp-spec-agent.md` — Phase 1–4 (parent)
 - `docs/adrs/2026-05-18-browser-mcp-architecture.md` — original ADR
 - `docs/plans/2026-05-18-untrusted-multi-tenant-isolation.md` —
