@@ -2,13 +2,30 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-> **Status:** Phases 0 + 1 complete (2026-05-19). Phase 2 not yet started.
+> **Status (2026-05-20):** Phases 0–2 complete; Phase 3 effectively skipped;
+> Phase 4 cleanup blocked on a separate Step-Chat browser-MCP migration.
 > Supersedes `2026-05-18-untrusted-multi-tenant-isolation.md`.
 > Architecture decision: [`docs/adrs/2026-05-18-browser-mcp-architecture.md`](../adrs/2026-05-18-browser-mcp-architecture.md).
-> Owner: tbd. Estimated effort: ~6–8 weeks across 5 phases.
+> Owner: tbd. Estimated effort revised to ~4–5 weeks delivered + a separate
+> follow-up plan for the Step-Chat migration (see Phase 5 note below).
 >
-> **Phase 1 landed in PRs #79, #80, #81, #82, #84.** Notable deviations from
-> the original sketch are captured per task below.
+> - **Phase 1** landed in PRs #79, #80, #81, #82, #84. Notable deviations from
+>   the original sketch are captured per task below.
+> - **Phase 2** landed in PR #86 (commit `ef1d53b`, "browser-side spec agent
+>   (UI + stores + tools)"). The browser composable, Pinia stores, tools,
+>   provider-identity settings page, and chat host all shipped in one cut.
+> - **Phase 3** was effectively skipped: no `useBrowserAgent` feature flag was
+>   introduced because Phase 2 went directly to default. The new chat page
+>   (`/specs/[orgSlug]/[projSlug]/chat.vue`) is the only Speckit chat path. No
+>   data-migration script was needed (no pre-existing browser-side draft data
+>   to import; existing on-disk specs are read via the unchanged
+>   `read_existing_spec` tool).
+> - **Phase 4** is **blocked**: the server-side `turn.post.ts` endpoint that
+>   drives the *step-chat* UI (`/specs/[orgSlug]/[projSlug]/steps/[stepId].vue`)
+>   still depends on `createSpeckitRunnerFactory` → `AcpRunner`. Removing the
+>   ACP stack would break step-chat. The intended follow-up is to migrate
+>   step-chat itself to a browser-MCP shape — tracked separately as Phase 5
+>   in `docs/plans/2026-05-20-step-chat-browser-mcp.md`.
 
 **Goal:** Den Speckit-Chat-Agent aus dem Specifyr-Server in den User-Browser verlagern. Der Server stellt nur eine schmale, getypte REST-Tool-Surface bereit und führt selbst keinen LLM- oder Agent-Code mehr aus.
 
@@ -505,7 +522,7 @@ it("rejects path traversal in glob param", async () => {
 
 ---
 
-### Phase 2: Browser Agent (2–2.5 Wochen) — ⬜ next
+### Phase 2: Browser Agent (2–2.5 Wochen) — ✅ done (PR #86)
 
 **Entry checklist for a fresh session:**
 
@@ -798,9 +815,18 @@ Feature-Flag `useBrowserAgent` toggled zwischen altem Server-Side-Chat und neuem
 
 ---
 
-### Phase 3: Migration + Feature Flag (1 Woche)
+### Phase 3: Migration + Feature Flag — ⏭️ skipped
 
-#### Task 3.1: Feature-Flag in App-Config
+Phase 2 went directly to default. No `useBrowserAgent` flag was added because
+the new chat page (`chat.vue`) is wired as a parallel route, not a replacement
+for an existing server-side chat — so there was nothing to toggle between. No
+data-migration script was needed; existing on-disk specs are read via the
+`read_existing_spec` tool and converted into drafts on-demand by the user via
+the normal "New Draft" flow.
+
+Sub-tasks below are retained for historical context but were not executed.
+
+#### Task 3.1: Feature-Flag in App-Config — ⏭️ skipped
 
 **Files:**
 - Modify: `nuxt.config.ts` (`runtimeConfig.public.useBrowserAgent`)
@@ -828,9 +854,35 @@ Nach 1–2 Wochen Beta mit Volunteers. Rollback-Switch bleibt für 1 weitere Woc
 
 ---
 
-### Phase 4: Cleanup (1 Woche)
+### Phase 4: Cleanup — ⏸️ blocked on step-chat migration
 
-**Voraussetzung:** Phase 3 ist seit mindestens 2 Wochen in Produktion ohne Rollback.
+**Original precondition:** Phase 3 stable for 2+ weeks. Superseded by a
+concrete blocker discovered during the 2026-05-20 cleanup attempt:
+
+The `server/projects/api/orgs/[slug]/projects/[projSlug]/steps/[stepId]/sessions/[sid]/turn.post.ts`
+endpoint — used by the step-chat UI at `app/pages/specs/[orgSlug]/[projSlug]/steps/[stepId].vue` —
+calls `createSpeckitRunnerFactory()`, which spawns `AcpRunner`. The
+step-chat UI is **not Speckit**; it is the per-workflow-step chat that
+predates the browser-MCP pivot. The Phase-1 architectural sketch implicitly
+assumed step-chat would either also be migrated or be retired by Phase 4
+time. Neither has happened.
+
+`src/core/run-scheduler.js` (driving `/run/start.post.ts`) is independently
+ACP-aware via `fallbackChain: ["hermes", "acp:codex"]`, but
+`HermesStreamingRunner.isAvailable()` currently probes for a *local*
+binary — the "Hermes on a remote host" architecture the user wants is also
+not yet built. So the `/run` feature still requires the ACP fallback today.
+
+**Unblocking path** (tracked in
+[`docs/plans/2026-05-20-step-chat-browser-mcp.md`](2026-05-20-step-chat-browser-mcp.md)):
+migrate step-chat to a browser-MCP shape (analogous to Phase 2 of this plan
+for Speckit). After that migration ships, the cleanup tasks below become
+executable.
+
+A separate Hermes-remote architecture plan is also a prerequisite for
+collapsing the run-scheduler fallback chain.
+
+**Voraussetzung (original):** Phase 3 ist seit mindestens 2 Wochen in Produktion ohne Rollback.
 
 #### Task 4.1: Server-Side Speckit-Agent-Code entfernen
 
