@@ -1,136 +1,164 @@
-# Phase 5 — Step-Chat off the Server-Side ACP Stack
+# Phase 5 — Step-Chat off the ACP Stack, onto Browser-MCP
 
-> **Status (2026-05-20):** strategy doc, not yet a build plan. Picks up where
-> `2026-05-18-browser-mcp-spec-agent.md` Phase 4 stalled.
+> **Status (2026-05-20, revised):** strategy doc, not yet a build plan.
+> Picks up where `2026-05-18-browser-mcp-spec-agent.md` Phase 4 stalled.
 >
-> **Owner:** tbd. **Effort:** depends on chosen path (see below).
+> **Owner:** tbd. **Effort:** ~2 weeks for 5a (step-chat migration) +
+> ~3 days for 5b (ACP cleanup) once 5a is in. A separate Phase 6 plan
+> handles the git-push surface.
 
-## What's blocked and why
+## The product flow this plan locks in
 
-`docs/plans/2026-05-18-browser-mcp-spec-agent.md` Phase 4 ("remove ACP")
-cannot land while the step-chat UI still depends on the ACP stack:
+1. User picks their own LLM provider in the browser
+   (`/settings/speckit-agent`, localStorage). Keys never reach Specifyr.
+2. User produces spec artifacts (`specs/spec.md`, `planning.md`,
+   `tasks.md`, etc.) entirely browser-side, using Speckit skills as
+   LLM instructions.
+3. User pushes finished artifacts to a git repo via Specifyr (Phase 6).
+4. Hermes (lives in this repo under `src/runners/hermes-*`, runs on
+   remote hosts, fed by org-managed credentials) reads the git repo and
+   executes whatever the spec asks for. Hermes is *not* something
+   Specifyr starts in-process; Specifyr only delivers the artifacts.
 
-| UI | Endpoint | Backing |
-|---|---|---|
-| `app/pages/specs/[orgSlug]/[projSlug]/steps/[stepId].vue` | `POST .../steps/[stepId]/sessions/[sid]/turn` | `server/projects/api/.../turn.post.ts` → `createSpeckitRunnerFactory()` → `AcpRunner` |
-| `app/pages/specs/[orgSlug]/[projSlug]/run.vue` | `POST .../run/start` | `server/projects/api/.../run/start.post.ts` → `RunScheduler` (fallbackChain `["hermes", "acp:codex"]`) |
+Specifyr's job is the spec-authoring surface (steps 1–2) plus the
+"publish to git" handoff (step 3). Task execution from a spec is not
+Specifyr's job anymore.
 
-The Speckit-Chat UI (`chat.vue`) was migrated to the browser side in PR #86
-and is independent of ACP. Step-chat and run-scheduler are not. So the ACP
-binaries, `src/runners/acp.js`, `server/shared/utils/speckit-agent-runner.ts`,
-the `acp:*` validator branches, and the Dockerfile installs must all stay
-until step-chat moves off the ACP runner.
+## What's blocked today and why
 
-## Why this isn't just "do Phase 2 again"
+`docs/plans/2026-05-18-browser-mcp-spec-agent.md` Phase 4 wants to
+delete the server-side ACP stack — `src/runners/acp.js`,
+`server/shared/utils/speckit-agent-runner.ts`, the Dockerfile installs,
+`tests/acp/*`. Two live UIs still call into it:
 
-The browser-MCP architecture for Speckit (PR #86) deliberately restricted
-the tool surface:
+| UI | Endpoint | Backing | What it is |
+|---|---|---|---|
+| `app/pages/specs/[orgSlug]/[projSlug]/steps/[stepId].vue` | `POST .../steps/[stepId]/sessions/[sid]/turn` | `turn.post.ts` → `createSpeckitRunnerFactory()` → `AcpRunner` | The structured Spec-Kit workflow UI (Spec → Plan → Tasks → …). Each step is its own chat. The unmigrated half of Speckit. |
+| `app/pages/specs/[orgSlug]/[projSlug]/run.vue` | `POST .../run/start` | `run/start.post.ts` → `RunScheduler` | Old in-app task-graph runner — picks up tasks.md and executes each task locally inside the Specifyr container. From the pre-pivot architecture. |
 
-> Bewusst NICHT in der Surface: kein `write_arbitrary_file`, kein
-> `execute_command`, kein `git_*`, kein `npm_install`, kein `read_git_log`.
-> Was ein autonomer Hermes-Agent später braucht, ist eine eigene, getrennte
-> Surface auf separater Infra.
-> — `2026-05-18-browser-mcp-spec-agent.md`, "Tool-Surface"
+PR #86 shipped a parallel browser-MCP chat at `chat.vue` for free-form
+draft work. `steps/[stepId].vue` is the *other* half — the structured
+workflow — and was left for later.
 
-Step-chat needs exactly that broader surface — it writes source files,
-runs commands, walks the repo. Repeating the Speckit pattern verbatim
-would either:
+## The migration
 
-- **Widen the browser-MCP surface to include code-modifying tools.** Brings
-  the original threat model back (LLM-output decides what to write/run on
-  the server; path-traversal and command-injection guards become the only
-  safety net).
-- **Push step-chat to Hermes-on-remote.** Keeps the isolation story intact
-  but requires the Hermes-remote infrastructure to exist first. The user's
-  position (2026-05-20) is that Hermes should later run on arbitrary
-  remote hosts, not on the Specifyr server — so Hermes-on-remote is
-  desired anyway.
+### Phase 5a — Step-Chat on Browser-MCP
 
-## Two viable paths
+Give `steps/[stepId].vue` the same shape as `chat.vue`. Same browser
+composable pattern (`useSpeckitAgent`), same Vercel AI SDK, same REST
+tool surface (`list_files`, `read_file`, `search_code`,
+`read_existing_spec`, `list_my_drafts`, `load_draft`,
+`update_draft_files`). No new tools, no Hermes calls. The step ID
+becomes part of the session/draft identity so different workflow steps
+get their own chat history but share the same draft bundle.
 
-### Path A — Step-chat on Hermes-on-remote (preferred)
+Key decisions:
+- Keep `steps/[stepId].vue` separate from `chat.vue` rather than
+  collapsing them — the step-by-step affordance *is* the value of the
+  Spec-Kit workflow; `chat.vue` is the free-form alternative.
+- Replace `ChatStream.vue`'s `POST /turn` pipeline with a
+  composable-driven stream identical to `SpeckitChatHost`.
+- Per-step session list (`SessionList.vue`) needs to either be reused
+  with a new in-browser data source or simplified — sessions in the
+  current model are server rows; in the browser-MCP model they could be
+  collapsed into the draft's conversation array.
 
-Architecturally consistent with the existing decisions: Hermes runtime
-already runs in isolated Docker containers for company-agents; step-chat
-fits the same execution shape (autonomous file edits, command execution,
-long-running).
+Outcome: nothing in the app calls into ACP from interactive code paths
+anymore.
 
-Prerequisite work that this depends on:
+### Phase 5b — Delete the ACP stack
 
-1. Hermes-remote control plane: protocol for the Specifyr server to spawn
-   sessions on a remote Hermes host, hand it a credential blob (org-scoped
-   keys per the user's "centrally managed keys" decision), stream events
-   back to the Specifyr browser.
-2. Per-session credential delivery: short-lived signed tokens that let
-   the remote Hermes pull or receive org-scoped LLM keys, without those
-   keys persisting on the remote host beyond the session.
-3. Step-chat client refactor: replace the ACP-over-`turn.post.ts` plumbing
-   with the new Hermes-remote session protocol. UI components (`ChatStream`,
-   `ChatMessage`) likely stay; the transport beneath them changes.
-4. Phase 4 cleanup of the old plan becomes executable: drop
-   `speckit-agent-runner.ts`, `src/runners/acp.js`, `src/runners/claude-code.js`,
-   `src/runners/claude-stream-to-acp.js`, the `acp:*` validator branches,
-   the Dockerfile ACP installs, and `tests/acp/*` + `tests/runners/acp-*`.
+With 5a in, the server has no live consumers of:
 
-**Effort estimate:** 4–6 weeks. The Hermes-remote control plane is the
-big rock; step-chat porting on top of it is comparatively small.
+**Delete:**
+- `app/pages/specs/[orgSlug]/[projSlug]/run.vue` and
+  `app/components/ui/RunTaskList.vue`, `RunTaskDetail.vue` —
+  task execution is no longer Specifyr's job
+- `server/projects/api/orgs/[slug]/projects/[projSlug]/run/start.post.ts`
+  and the run/status endpoints, plus their tests
+- `src/core/run-scheduler.js` and `tests/runners/acp-runner-scheduler.test.js`
+- `server/projects/api/orgs/[slug]/projects/[projSlug]/steps/[stepId]/sessions/[sid]/turn.post.ts`
+  and the related session create/delete endpoints
+- `server/shared/utils/speckit-agent-runner.ts`
+- `src/runners/acp.js`, `src/runners/claude-code.js`,
+  `src/runners/claude-stream-to-acp.js`
+- `bin/specifyr-acp.js` (CLI entry for the ACP runner — likely orphaned)
+- `tests/acp/*` (8 files), `tests/runners/acp-*` (4 files),
+  `tests/core/turn-broker-acp.test.js`,
+  `tests/integration/acp-gemini.test.js`
 
-### Path B — Step-chat on browser-MCP with a wider tool surface
+**Update:**
+- `server/shared/utils/validation.ts` — drop `ACP_RUNNERS`, either
+  remove `speckitAgentProfileSchema` entirely (no DB-backed Speckit
+  profile concept after browser-MCP) or narrow it
+- `server/shared/utils/llm-agent-profiles-store.ts` — drop the `acp:*`
+  validator branch in the Speckit path
+- `app/pages/settings/me/llm.vue` — remove
+  `<AgentsSpeckitAgentProfileCard>` (the underlying profile concept is
+  gone); page becomes Hermes-only as already labeled
+- `Dockerfile` — drop the `claude-agent-acp`, `codex-acp`, `gemini-cli`
+  npm-install block; the runtime image gets smaller
 
-If the architectural budget for Hermes-remote isn't available soon, the
-alternative is to do for step-chat what Phase 2 did for Speckit — port the
-UI to a browser-side composable with Vercel AI SDK, and add the
-code-modifying tools to the REST surface.
+**Keep:**
+- `src/runners/hermes-streaming.js`, `src/runners/hermes-docker.js`,
+  and the broader `src/runners/hermes-*` family — Hermes implementation
+  is the *output* of this whole effort, runs on remote hosts
+- `server/projects/api/orgs/[slug]/projects/[projSlug]/company/start.post.ts`
+  and the company-agent runtime endpoints — that's how Hermes spawns
+  its agents
+- `app/pages/settings/orgs/[slug]/llm.vue` — Hermes org-credentials UI
+- The personal-Hermes-credentials page (`/settings/me/llm`) minus the
+  Speckit profile card
 
-Required tool surface additions on top of the Speckit set:
+After 5b, the only LLM-execution path Specifyr's server still has is
+the Hermes path. The browser is the only place Speckit talks to a
+language model.
 
-| Tool | Surface | Threat |
-|---|---|---|
-| `write_file(path, content)` | `PUT /api/orgs/.../projects/.../files/<path>` | Path traversal, arbitrary content. Mitigation: same `O_NOFOLLOW + realpath` pattern Phase 1 used for reads, plus a deny-list for `.git/`, `node_modules/`, `.specifyr/`. |
-| `delete_file(path)` | `DELETE /api/orgs/.../projects/.../files/<path>` | Same path-traversal concerns. Confirm-on-LLM-call UX in the chat to avoid silent destruction. |
-| `run_command(cmd, args, cwd?)` | `POST /api/orgs/.../projects/.../run-command` | Code execution on the Specifyr host. **This is the core of the threat model the pivot was supposed to remove.** Mitigation requires a sandboxed worker process per project, which is non-trivial. |
-| `git_*` (status, diff, log, add, commit) | `POST /api/orgs/.../projects/.../git/<op>` | Lower risk than arbitrary `run_command`. Possibly safer to expose these specifically and *not* `run_command` at all. |
+### Phase 6 (deferred to its own plan) — Publish to Git
 
-The honest read on Path B: the security gain of the original browser-MCP
-pivot (server has no LLM-decided execution path) is largely sacrificed for
-step-chat. Speckit stays safe because Speckit's tools remain read-only +
-draft-write; but the *server as a whole* now hosts a tool surface that an
-LLM can drive into arbitrary file writes and command execution. Path
-traversal and a deny-list aren't a replacement for process-level isolation.
+After 5b lands, Specifyr can produce spec artifacts but has no way to
+get them into the git repo Hermes will read. Phase 6 builds that
+bridge:
 
-**Effort estimate:** 2–3 weeks for the port + new endpoints, plus an
-indefinite amount for hardening the command-execution path that Path A
-sidesteps entirely.
+- Store user-supplied git remote URL + credential (PAT or SSH key,
+  AES-GCM encrypted, same pattern as `llm_credentials`)
+- "Publish to git" action on the Speckit page: pulls the latest
+  published spec_drafts, materializes them under `specs/` in a working
+  checkout, commits + pushes
+- Branch strategy and PR vs. direct-commit configurability
+- Empty-repo bootstrap (initialize `.specify/` scaffolding on first
+  push)
 
-## Recommendation
+Phase 6 is out of scope for the current branch.
 
-**Path A** is consistent with the security goals of the browser-MCP pivot
-and with the user's stated direction for Hermes (remote hosts, centrally
-managed keys). Path B is feasible if shipping is urgent, but it spends
-the security budget the pivot was supposed to bank.
+## Why this is smaller than the previous version of this doc said
 
-The next concrete step is a separate spec for the Hermes-remote control
-plane — its scope, the protocol shape, the per-session credential model,
-and how the Specifyr server proxies events. That spec is the prerequisite
-for an executable Phase-5 build plan.
+The earlier version (commit `61a0700`) put a "Path A — Step-chat on
+Hermes-on-remote" recommendation at the top. That was wrong: Speckit
+never ran on Hermes, was never meant to, and never will. Speckit is a
+browser-side spec-authoring tool. Hermes is the *consumer* of what
+Speckit produces, fed via git, running elsewhere. The migration of
+step-chat is therefore just "do for `steps/[stepId].vue` what PR #86
+did for `chat.vue`" — same tools, same composable, same DB schema.
+No new threat-model expansion, no waiting on infrastructure that
+doesn't exist yet.
 
-## Open questions for the spec round
+## Open questions for the build plan
 
-- Hermes-remote: pull or push credential delivery? Short-lived signed
-  tokens vs. mTLS-only? (Affects what the Specifyr server has to know
-  about each Hermes host.)
-- Step-chat semantics on a remote: is the session bound to one Hermes
-  host for its lifetime, or can it migrate? (Affects state location.)
-- File-system surface: does the Hermes host see the project as a Git
-  repo (clone + push back) or as a live bind mount (which the
-  multi-tenant-isolation plan flagged as dangerous)?
-- Does the `/run` scheduler also move to Hermes-remote, or does it stay
-  a Specifyr-server orchestrator that fans out to per-task Hermes
-  sessions?
+- Session model in step-chat: keep per-step session rows
+  (`step_sessions`) for history, or fold sessions into the draft's
+  `conversation` JSON the way `chat.vue` does?
+- `ChatStream.vue`: refactor in place or replace with
+  `SpeckitChatHost.vue`-equivalent? Component surface affects how much
+  of the existing UI (artifact viewer, hook gate banner) carries over.
+- Workflow steps that aren't chat-shaped (the "Run" step today) need a
+  decision too — turn into a "Publish to git" step instead, since
+  in-app task execution goes away?
 
 ## Related documents
 
 - `docs/plans/2026-05-18-browser-mcp-spec-agent.md` — Phase 1–4 (parent)
 - `docs/adrs/2026-05-18-browser-mcp-architecture.md` — original ADR
-- `docs/plans/2026-05-18-untrusted-multi-tenant-isolation.md` — superseded;
-  contains the threat-model material that informs Path A vs. Path B
+- `docs/plans/2026-05-18-untrusted-multi-tenant-isolation.md` —
+  superseded; contains the threat-model material that informed the
+  decision to keep Speckit's tool surface read-only

@@ -875,12 +875,14 @@ not yet built. So the `/run` feature still requires the ACP fallback today.
 
 **Unblocking path** (tracked in
 [`docs/plans/2026-05-20-step-chat-browser-mcp.md`](2026-05-20-step-chat-browser-mcp.md)):
-migrate step-chat to a browser-MCP shape (analogous to Phase 2 of this plan
-for Speckit). After that migration ships, the cleanup tasks below become
-executable.
-
-A separate Hermes-remote architecture plan is also a prerequisite for
-collapsing the run-scheduler fallback chain.
+migrate `steps/[stepId].vue` to the same browser-MCP shape that
+`chat.vue` already has (Phase 5a), then delete the `run.vue` /
+`RunScheduler` in-app task-execution stack along with the rest of the
+ACP code (Phase 5b). In-app task execution goes away entirely — that
+job belongs to Hermes running on remote hosts (Hermes implementation
+lives in `src/runners/hermes-*`; it's part of this repo, just deployed
+elsewhere). The git-push handoff between Speckit and Hermes is a
+separate Phase 6.
 
 **Voraussetzung (original):** Phase 3 ist seit mindestens 2 Wochen in Produktion ohne Rollback.
 
