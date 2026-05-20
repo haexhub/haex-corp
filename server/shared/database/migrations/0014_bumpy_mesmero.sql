@@ -1,0 +1,2 @@
+ALTER TABLE "spec_drafts" ADD COLUMN "step_id" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "spec_drafts_project_owner_step_uq" ON "spec_drafts" USING btree ("project_id","owner_user_id","step_id") WHERE step_id IS NOT NULL AND status = 'draft';

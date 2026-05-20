@@ -592,6 +592,12 @@ export const specDrafts = pgTable(
       .notNull()
       .default("draft"),
     baseVersion: integer("base_version").notNull(),
+    // Scopes a draft to a single workflow step (e.g. "spec", "plan",
+    // "tasks"). NULL = free-form chat.vue draft, not bound to a step.
+    // The `byProjectOwnerStep` unique index enforces at most one open
+    // draft per (project, user, step). See plans/2026-05-21-step-chat-
+    // browser-mcp-build.md Task 5a.1.
+    stepId: text("step_id"),
     // Vercel-AI-SDK message array. Validated at the wire boundary
     // (Zod in spec-tools-schemas.ts); stored as jsonb so we get
     // write-time JSON validation without parsing on every read.
@@ -613,6 +619,12 @@ export const specDrafts = pgTable(
       t.projectId,
       t.status,
     ),
+    // One open draft per (project, user, step). Filtered on the active
+    // status so historical published drafts don't block a fresh draft
+    // for the same step.
+    byProjectOwnerStep: uniqueIndex("spec_drafts_project_owner_step_uq")
+      .on(t.projectId, t.ownerUserId, t.stepId)
+      .where(sql`step_id IS NOT NULL AND status = 'draft'`),
     // Drizzle's `enum:` option is TS-only — the DB column is plain TEXT
     // and would accept any string from a non-API writer. Enforce the
     // allowed set at the DB layer too so a stray INSERT can't silently
