@@ -29,7 +29,7 @@ cleanup once we've watched 5a in production for ~1 week.
 
 ## Architecture sketch
 
-```
+```text
                 ┌─────────────────────────────────────────┐
                 │ steps/[stepId].vue                       │
                 │                                          │
@@ -46,22 +46,21 @@ cleanup once we've watched 5a in production for ~1 week.
                                 │ uses
                                 ▼
                 ┌─────────────────────────────────────────┐
-                │ useSpeckitStepAgent({ projectId,         │ ◄── new (thin
-                │   stepId, draftId })                     │     wrapper
-                │                                          │     over useSpeckitAgent)
-                │   - openOrCreateDraft({ stepId })        │
-                │   - sendMessage(text)                    │
-                │   - insertDraftText(text)                │
+                │ useSpeckitStepAgent({ orgSlug, projSlug, │ ◄── new (step
+                │   stepId })                              │     composable —
+                │                                          │     not a wrapper
+                │   - resolveDraft() via by-step endpoint  │     of useSpeckit-
+                │   - sendMessage(text) (own turn loop)    │     Agent; reuses
+                │   - insertDraftText(text)                │     store + libs)
                 └─────────────────────────────────────────┘
                                 │
-                                │ wraps
+                                │ reuses
                                 ▼
                 ┌─────────────────────────────────────────┐
-                │ useSpeckitAgent (existing)               │
-                │   + provider identity from localStorage  │
-                │   + Vercel AI SDK streamText             │
-                │   + buildSpeckitTools(ctx)               │
-                │   + useActiveSessionStore.commitTurn     │
+                │ useActiveSessionStore (openDraft,        │
+                │ appendTurn, commitTurn)                  │
+                │ buildSpeckitTools / buildLanguageModel   │
+                │ SPECKIT_SYSTEM_PROMPT                    │
                 └─────────────────────────────────────────┘
                                 │
                                 │ persists via
@@ -82,8 +81,12 @@ cleanup once we've watched 5a in production for ~1 week.
 - `SessionList.vue` and the `/steps/.../sessions` endpoints stay
   callable until Phase 5b, but `steps/[stepId].vue` stops linking to
   them in 5a.
-- `useSpeckitAgent` is wrapped, not forked. The wrapper
-  `useSpeckitStepAgent` adds step-awareness; everything else is reused.
+- `useSpeckitStepAgent` does **not** literally wrap `useSpeckitAgent`
+  (the latter's `onMounted` auto-loads from a fixed `draftId` arg,
+  which can't reactively swap on `stepId` change). It reuses the same
+  store layer (`useActiveSessionStore`) and the same libs
+  (`buildSpeckitTools`, `buildLanguageModel`, `SPECKIT_SYSTEM_PROMPT`)
+  and mirrors the turn loop, so the implementations stay in sync.
 
 ## Tasks
 
@@ -186,15 +189,18 @@ const {
 
 **Internals:**
 1. On mount: call `GET /spec-drafts/by-step/:stepId` to resolve the
-   draft. Pipe `draftId` into `useSpeckitAgent({ projectId, draftId })`
-   (existing composable).
-2. Forward `session`, `saveState`, `isStreaming`, `sendMessage`,
-   `cancel`, `retrySave` from `useSpeckitAgent`.
+   draft, then `useActiveSessionStore.openDraft({ orgSlug, projSlug,
+   draftId })` to make it the active session.
+2. Re-implement the `streamText` turn loop locally (mirroring
+   `useSpeckitAgent.sendMessage`) so a `stepId` change can swap the
+   open draft without remounting — `useSpeckitAgent`'s `onMounted`
+   binds to a fixed `draftId` and can't reactively swap.
 3. Add `insertDraftText(text)` that appends to a buffered "next message"
    value (consumed by `sendMessage` or the chat input box —
    implementation choice in 5a.4).
-4. When `stepId` changes (user navigates to a different step), re-run
-   the GET and swap drafts.
+4. When `stepId` (or `orgSlug`/`projSlug`) changes, re-run the GET and
+   swap drafts. Guard with a per-call sequence token so a slow earlier
+   response can't clobber a newer one.
 
 **Tests** (vitest, mocked `$fetch`, `MockLanguageModelV1`):
 - Mount → GET fired → draft resolved → composable returns active
@@ -347,7 +353,9 @@ call breaks. Treat any hit as a 5a blocker.
 - All six tasks committed, each with passing tests.
 - E2E test in `tests/e2e/step-chat-browser-mcp.test.ts` walks the full
   flow described in 5a.5 verification.
-- `app/` directory grep for `POST .../turn` returns zero hits.
+- `app/` directory grep for `POST .../turn` has no reachable step-chat
+  callsites. The orphaned `ChatStream.vue` reference is acceptable and
+  goes away in Phase 5b cleanup.
 - `pnpm test` and `pnpm typecheck` both green.
 - Manual smoke test against a live dev stack: spec step → plan step →
   tasks step, each in browser-MCP mode, each draft persists across
