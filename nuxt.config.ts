@@ -30,13 +30,23 @@ export default defineNuxtConfig({
       // keys are persisted) is shared across all pages on this origin —
       // an XSS on /settings/speckit-agent or any other page would
       // otherwise be able to exfiltrate them. The connect-src allowlist
-      // is intentionally narrow: the four LLM provider hosts plus 'self'.
+      // is intentionally narrow: the four LLM provider hosts plus 'self'
+      // — that's the real exfil defense once an XSS has executed.
+      //
+      // 'unsafe-inline' is required because Nuxt injects
+      // `<script>window.__NUXT__.config = {...}</script>` inline for
+      // client-side runtime-config bootstrap (both dev and prod). Without
+      // it, the script is blocked, __NUXT__ stays undefined, and
+      // Nuxt's entry crashes with "target argument of Proxy must be an
+      // object". Dev mode additionally needs 'unsafe-eval' for Vite HMR.
       "/**": {
         headers: {
           "Content-Security-Policy": [
             "default-src 'self'",
             "connect-src 'self' https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://openrouter.ai",
-            "script-src 'self'",
+            process.env.NODE_ENV === "production"
+              ? "script-src 'self' 'unsafe-inline'"
+              : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data:",
             "font-src 'self' data:",
