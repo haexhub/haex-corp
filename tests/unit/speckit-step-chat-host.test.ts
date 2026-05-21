@@ -127,7 +127,7 @@ describe("SpeckitStepChatHost", () => {
     teardown();
   });
 
-  it("exposes insertIntoDraft → buffer is consumed by the next sendMessage", async () => {
+  it("exposes insertIntoDraft and the agent's insertDraftText API", async () => {
     const byStep = fakeByStepResponse("spec");
     fetchMock.mockResolvedValueOnce(byStep);
     fetchMock.mockResolvedValueOnce(fakeDraftResponse(byStep.id));

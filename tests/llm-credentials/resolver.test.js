@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { eq } from "drizzle-orm";
 
 // node:test treats `{ skip: null }` as truthy → use `false` to opt-in.
 const skipReason = !process.env.DATABASE_URL
@@ -36,8 +37,11 @@ test("resolveCredentialForUser: empty → null", { skip: skipReason }, async () 
     const r = await resolveCredentialForUser(u.id, "anthropic");
     assert.equal(r, null);
   } finally {
-    await db.delete(llmCredentials);
-    await db.delete(users);
+    // Scope deletes to this test's user. Other DB tests (e.g. spec-draft)
+    // leave orgs around whose owner_user_id is RESTRICT, so an unscoped
+    // `delete from users` would fail on those leftover rows.
+    await db.delete(llmCredentials).where(eq(llmCredentials.ownerId, u.id));
+    await db.delete(users).where(eq(users.id, u.id));
     await closeDb();
   }
 });
@@ -74,8 +78,8 @@ test(
       assert.equal(r.apiKey, "sk-ant-test-12345");
       assert.equal(r.baseUrl, null);
     } finally {
-      await db.delete(llmCredentials);
-      await db.delete(users);
+      await db.delete(llmCredentials).where(eq(llmCredentials.ownerId, u.id));
+      await db.delete(users).where(eq(users.id, u.id));
       await closeDb();
     }
   },
