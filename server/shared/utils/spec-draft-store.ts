@@ -226,23 +226,27 @@ export async function findOrCreateStepDraft(
       };
     }
 
-    let inserted;
-    try {
-      [inserted] = await tx
-        .insert(specDrafts)
-        .values({
-          projectId: input.projectId,
-          ownerUserId: input.ownerUserId,
-          stepId: input.stepId,
-          title: input.initialTitle,
-          baseVersion: input.baseVersion,
-          conversation: [],
-        })
-        .returning();
-    } catch (err) {
+    // Use ON CONFLICT DO NOTHING rather than catching the unique-violation
+    // exception: a constraint violation aborts the surrounding tx in
+    // Postgres, so the follow-up SELECT on the same tx would itself fail
+    // ("current transaction is aborted"). DO NOTHING lets the tx live.
+    const [inserted] = await tx
+      .insert(specDrafts)
+      .values({
+        projectId: input.projectId,
+        ownerUserId: input.ownerUserId,
+        stepId: input.stepId,
+        title: input.initialTitle,
+        baseVersion: input.baseVersion,
+        conversation: [],
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    if (!inserted) {
       // Concurrent caller won the race under the partial unique index.
       const raced = await selectOpen();
-      if (!raced) throw err;
+      if (!raced) throw new Error("step draft conflict without visible row");
       return {
         id: raced.id,
         title: raced.title,
@@ -256,7 +260,6 @@ export async function findOrCreateStepDraft(
         created: false,
       };
     }
-    if (!inserted) throw new Error("draft insert returned nothing");
     return {
       id: inserted.id,
       title: inserted.title,

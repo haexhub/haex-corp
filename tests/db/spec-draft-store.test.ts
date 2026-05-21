@@ -179,3 +179,46 @@ test(
     });
   },
 );
+
+test(
+  "findOrCreateStepDraft is race-safe under concurrent callers",
+  { skip: skipIfNoDb },
+  async () => {
+    await withDb(async () => {
+      const { findOrCreateStepDraft } = await import(
+        "../../server/shared/utils/spec-draft-store.ts"
+      );
+      const { recordProjectOwnership } = await import(
+        "../../server/shared/utils/project-store.ts"
+      );
+      const { createOrgWithAdmin } = await import(
+        "../../server/shared/utils/org-store.ts"
+      );
+      const u = await seedUser();
+      const org = await createOrgWithAdmin("Acme", u.id);
+      const project = await recordProjectOwnership("p1", {
+        ownerOrgId: org.id,
+      });
+
+      // Two concurrent callers for the same (project, user, step) must
+      // resolve to the SAME draft — one wins the insert race under the
+      // partial unique index, the other re-selects.
+      const input = {
+        projectId: project!.id,
+        ownerUserId: u.id,
+        stepId: "spec",
+        baseVersion: 0,
+        initialTitle: "Step: spec",
+      };
+      const [first, second] = await Promise.all([
+        findOrCreateStepDraft(input),
+        findOrCreateStepDraft(input),
+      ]);
+
+      assert.equal(first.id, second.id);
+      const createdCount =
+        Number(first.created) + Number(second.created);
+      assert.equal(createdCount, 1, "exactly one caller should win the insert");
+    });
+  },
+);
