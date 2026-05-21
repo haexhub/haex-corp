@@ -72,11 +72,20 @@ export function useSpeckitStepAgent(
   const pendingInsert = ref<string[]>([]);
   let abortController: AbortController | null = null;
 
+  // Per-call sequence token: only the latest resolveDraft() may apply
+  // its result to the session store. Fast route changes (any of orgSlug,
+  // projSlug, stepId) can overlap network calls; without this, a slow
+  // earlier response could clobber a newer one and leave the wrong
+  // draft open.
+  let resolveSeq = 0;
+
   async function resolveDraft(): Promise<void> {
+    const seq = ++resolveSeq;
     const url =
       `/api/orgs/${args.orgSlug.value}/projects/${args.projSlug.value}` +
       `/spec-drafts/by-step/${encodeURIComponent(args.stepId.value)}`;
     const res = await $fetch<ByStepResponse>(url);
+    if (seq !== resolveSeq) return;
     await session.openDraft({
       orgSlug: args.orgSlug.value,
       projSlug: args.projSlug.value,
@@ -88,9 +97,13 @@ export function useSpeckitStepAgent(
     void resolveDraft();
   });
   watch(
-    () => args.stepId.value,
-    (next, prev) => {
-      if (next === prev) return;
+    [
+      () => args.orgSlug.value,
+      () => args.projSlug.value,
+      () => args.stepId.value,
+    ],
+    ([nextOrg, nextProj, nextStep], [prevOrg, prevProj, prevStep]) => {
+      if (nextOrg === prevOrg && nextProj === prevProj && nextStep === prevStep) return;
       void resolveDraft();
     },
   );
