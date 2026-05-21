@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/haexhub/specifyr/compare/v0.19.0...v0.20.0) (2026-05-21)
+
+
+### Features
+
+* Phase 5a — step-chat on browser-MCP ([#91](https://github.com/haexhub/specifyr/issues/91)) ([046ffdc](https://github.com/haexhub/specifyr/commit/046ffdc762e2849f19a9ffaf229736599866b509))
+
+
+### Bug Fixes
+
+* **app:** unblock platform admin navigation ([#89](https://github.com/haexhub/specifyr/issues/89)) ([eba45da](https://github.com/haexhub/specifyr/commit/eba45daed2b7712fd18c187614b01bf81f76a6a6))
+
 ## [0.19.0](https://github.com/haexhub/specifyr/compare/v0.18.0...v0.19.0) (2026-05-19)
 
 
