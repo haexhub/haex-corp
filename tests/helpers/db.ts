@@ -41,6 +41,21 @@ async function ensureMigrations(): Promise<void> {
   if (_migrationsApplied) return;
   const db = getDb();
   if (!db) return;
+  // Migration 0000_baseline creates an RLS policy `TO "haex_claude_proxy"`
+  // that requires the role to already exist. The role itself is no longer
+  // needed at runtime (migration 0015 dropped both the table and its
+  // policies), but historic migrations still reference it, so a fresh DB
+  // can't replay 0000 → 0015 in order without it. Idempotent — re-running
+  // against an existing role is a no-op.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'haex_claude_proxy') THEN
+        CREATE ROLE haex_claude_proxy LOGIN PASSWORD 'devpw';
+      END IF;
+    END
+    $$;
+  `);
   await migrate(db, {
     migrationsFolder: path.resolve(process.cwd(), "server/shared/database/migrations"),
   });
