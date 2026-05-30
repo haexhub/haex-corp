@@ -2,18 +2,22 @@
 
 # ------------------------------------------------------------------------------
 # base: node 22 + pnpm (via corepack) + git/ripgrep for the speckit project
-# bootstrap and code-search endpoints. `specify` CLI for project init.
+# bootstrap and code-search endpoints.
+#
+# Optional: install the upstream spec-kit `specify` CLI if you want the
+# project-creation endpoint to auto-bootstrap `.specify/` on each new project.
+# When the binary is absent the endpoint records `specifyInit.status =
+# "pending_manual_setup"` and continues — the project directory + git repo
+# are still created, just without the spec-kit scaffold. See
+# https://github.com/github/spec-kit for current install instructions; the
+# project was deliberately left out of this image to avoid pinning to an
+# upstream package whose distribution channel is still in flux.
 # ------------------------------------------------------------------------------
 FROM node:22-alpine AS base
-RUN apk add --no-cache bash git tini ripgrep python3 py3-pip
+RUN apk add --no-cache bash git tini ripgrep
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH
 RUN corepack enable
-# spec-kit CLI: used by project-creation to bootstrap `.specify/` in new
-# projects (`specify init <slug>`). Pinned; bump via --build-arg.
-ARG SPEC_KIT_VERSION=0.3.0
-RUN pip3 install --break-system-packages "specify-cli==${SPEC_KIT_VERSION}" || \
-    pip3 install --break-system-packages "specify-cli"
 WORKDIR /app
 
 # ------------------------------------------------------------------------------

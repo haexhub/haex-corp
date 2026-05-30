@@ -111,6 +111,14 @@ export async function createProjectRecord(options: {
   };
 
   if (!initResult.ok) {
+    // `specify` binary missing / non-zero exit: we still finish the create so
+    // the user gets a writable project dir, but log loudly so an operator
+    // notices that scaffold steps were skipped. The status flag in meta.json
+    // (`pending_manual_setup`) is the durable record.
+    console.warn(
+      `[project-creation] specify init ${slug} failed (status=pending_manual_setup): ` +
+        (initResult.stderr || "Command not found"),
+    );
     await ensureDir(projectRoot);
   }
 

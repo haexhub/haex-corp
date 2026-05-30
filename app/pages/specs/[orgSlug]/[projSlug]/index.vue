@@ -5,12 +5,9 @@ import { Button } from "~/components/shadcn/button";
 import { Badge } from "~/components/shadcn/badge";
 import ConfirmDialog from "~/components/ui/ConfirmDialog.vue";
 import ProjectShell from "~/components/projects/ProjectShell.vue";
-import NotificationLogWidget from "~/components/ui/NotificationLogWidget.vue";
-import NotificationDrawer from "~/components/ui/NotificationDrawer.vue";
 import InstalledExtensionsWidget from "~/components/settings/InstalledExtensionsWidget.vue";
 import type { Workflow } from "~/utils/workflows";
 import type { StepId, StepStatus } from "~/utils/steps";
-import type { NotificationEvent } from "~/types/types";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -23,16 +20,10 @@ const { statusMap } = await useStepStates(workflowSteps);
 
 const deleteDialogOpen = ref(false);
 const deleting = ref(false);
-const notificationDrawerOpen = ref(false);
 
 const { data: availableWorkflows } = await useFetch<Workflow[]>(
   () => `${apiBase.value}/workflows`,
   { default: () => [], key: () => `workflows-${cacheKey.value}` }
-);
-
-const { data: events, pending: eventsLoading } = await useFetch<NotificationEvent[]>(
-  () => `${apiBase.value}/events`,
-  { default: () => [], key: () => `events-${cacheKey.value}` }
 );
 
 const completionStats = computed(() => {
@@ -42,8 +33,7 @@ const completionStats = computed(() => {
   return { complete, stale, total: workflowSteps.value.length };
 });
 
-function stepRoute(step: { id: string; isRun?: boolean }) {
-  if (step.isRun) return `${routeBase.value}/run`;
+function stepRoute(step: { id: string }) {
   return `${routeBase.value}/steps/${step.id}`;
 }
 
@@ -123,9 +113,6 @@ async function deleteProject() {
           <span v-if="completionStats.stale" class="ml-1 text-amber-500">
             {{ $t("specIndex.stale", { count: completionStats.stale }) }}
           </span>
-        </p>
-        <p v-if="events?.length">
-          <span class="font-medium text-foreground">{{ events.length }}</span> {{ $t("specIndex.eventsLabel") }}
         </p>
       </div>
     </template>
@@ -209,19 +196,7 @@ async function deleteProject() {
           </CardContent>
         </Card>
 
-    <div class="grid gap-6 lg:grid-cols-2">
-      <UiNotificationLogWidget
-        :events="events ?? []"
-        :loading="eventsLoading"
-        @open-drawer="notificationDrawerOpen = true"
-      />
-      <SettingsInstalledExtensionsWidget :org-slug="orgSlug" :proj-slug="projSlug" />
-    </div>
-
-    <UiNotificationDrawer
-      v-model:open="notificationDrawerOpen"
-      :events="events ?? []"
-    />
+    <SettingsInstalledExtensionsWidget :org-slug="orgSlug" :proj-slug="projSlug" />
 
     <UiConfirmDialog
       v-model:open="deleteDialogOpen"

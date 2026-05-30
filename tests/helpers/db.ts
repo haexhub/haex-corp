@@ -72,14 +72,13 @@ async function ensureMigrations(): Promise<void> {
  * don't accidentally get blown away by a stale test setup.
  */
 const TABLES = [
-  "runner_sessions",
-  "llm_credentials",
   "org_invites",
   "org_extensions",
   "org_member_permissions",
+  "project_memberships",
   "org_memberships",
-  "orgs",
   "projects",
+  "orgs",
   "users",
 ];
 
