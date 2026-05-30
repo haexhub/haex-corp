@@ -1,4 +1,4 @@
-import { loadStepStateStore, loadEventStore } from "@su/specifyr-stores";
+import { loadStepStateStore } from "@su/specifyr-stores";
 
 /**
  * Reverts a step from `complete` back to `in_progress` so the user can iterate
@@ -11,25 +11,13 @@ export default defineEventHandler(async (event) => {
   if (!stepId) {
     throw createError({ statusCode: 400, statusMessage: "Missing stepId" });
   }
-  const { store } = await loadStepStateStore();
-  const events = await loadEventStore(orgId, slug);
+  const { store } = loadStepStateStore();
 
   const current = await store.getStep(orgId, slug, stepId);
-  const updated = await store.setStatus(
+  return store.setStatus(
     orgId,
     slug,
     stepId,
-    current.lastSessionId ? "in_progress" : "untouched"
+    current.lastSessionId ? "in_progress" : "untouched",
   );
-
-  await events.append({
-    type: "step_reopened",
-    level: "info",
-    slug,
-    stepId,
-    createdAt: new Date().toISOString(),
-    title: `Step '${stepId}' wieder geöffnet`
-  });
-
-  return updated;
 });

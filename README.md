@@ -1,104 +1,87 @@
 # specifyr
 
-specifyr is a local, spec-driven orchestration tool for building software through explicit artifacts instead of opaque agent prompts. The intended workflow is:
+specifyr is a browser-side UI for authoring software specifications using the
+[spec-kit](https://github.com/github/spec-kit) workflow. Specs evolve through
+explicit steps (constitution → specify → plan → tasks → implement) and live as
+markdown artifacts under `.specifyr/<orgId>/<slug>/`, ready to be consumed by an
+external agent runtime when it is time to execute the work.
 
-1. Formulate the work clearly in `spec-kit`.
-2. Sync the finalized spec into specifyr.
-3. Let specifyr generate the plan and work items.
-4. Let `hermes-agent` execute the approved work.
-5. Use `fabric` only where critique, summaries, or refinement patterns are useful.
+specifyr is **not** an agent runtime. The browser-side speckit agent runs in
+the user's browser (Vercel AI SDK + a REST tool surface against the Nitro
+server); model calls go directly from the browser to the user's chosen
+provider using a localStorage-backed identity. The Nitro server's job is to
+serve the UI, persist drafts, sync project directories to a git remote, and
+manage orgs / projects / memberships.
 
-Each initiative lives under `.specifyr/<slug>/` and moves through visible stages: `draft`, `refined`, `planned`, `approved_for_execution`, `running`, `blocked`, `completed`, `failed`.
+For autonomous, server-side multi-agent execution see the standalone
+hermes-agent project — it consumes finished specs from a git remote and
+executes them on its own infrastructure.
 
 ## What is included
 
-- A repo-native artifact store for specs, plans, tasks, run state, and event logs
-- A central orchestrator with approval gates
-- Provider and runner interfaces with local adapters for model generation and Hermes-style agent execution
-- Optional CLI adapters for `fabric` and `hermes` with safe fallback to local implementations
-- A `.specify/` mirror for spec-kit-style artifact navigation
-- Fabric-inspired pattern resolution by workflow stage
-- A Nuxt 4 UI built with Vue, Tailwind, and shadcn-style components for timeline, artifact, and run inspection
+- Spec drafting with auto-saved conversation history (one row per
+  `(project, owner, step)` in `spec_drafts`)
+- Per-project workflow step state stored on disk under `.specifyr/<orgId>/<slug>/steps/`
+- Org / project / membership / invite management backed by Postgres
+- Per-project git remote sync (HTTPS + PAT, AES-256-GCM encrypted at rest)
+- Org-installed spec-kit extensions (alternate workflows beyond the default)
+- Authentik forward-auth + a dev-mode email shortcut for local iteration
+- A Nuxt 4 UI built with Vue, Tailwind, and shadcn-style components
 
-## CLI
-
-```bash
-node ./src/index.js init
-node ./src/index.js config show
-node ./src/index.js config set integrations.fabric.enabled true
-node ./src/index.js config set integrations.hermes.enabled true
-node ./src/index.js spec create "Build a transparent spec-driven orchestrator"
-node ./src/index.js spec sync my-spec
-node ./src/index.js spec refine my-spec
-node ./src/index.js plan generate my-spec
-node ./src/index.js tasks generate my-spec
-node ./src/index.js approve my-spec spec
-node ./src/index.js approve my-spec plan
-node ./src/index.js approve my-spec task_batch
-node ./src/index.js run start my-spec
-node ./src/index.js run status my-spec
-node ./src/index.js ui
-```
-
-## Notes
-
-- Artifacts are plain files under `.specifyr/`.
-- Specs can be authored in `.specify/specs/<slug>/spec.md` and pulled into specifyr with `spec sync <slug>`.
-- specifyr also mirrors every initiative back into `.specify/specs/<slug>/` so the workflow stays compatible with spec-kit-style navigation.
-- Speckit workflow runs use an explicit ACP-backed agent profile from Settings: runner, provider, model, and credential.
-- No host CLI credential directory is mounted by default; local and cloud runs use the same Settings-managed auth path.
-- The UI runs through Nuxt. For local development use `pnpm dev` or `node ./src/index.js ui`.
-
-## Development with Docker
-
-For containerized development with hot module replacement:
+## Local development
 
 ```bash
-# Start dev environment with source mounting
-./dev.sh
-# or
-pnpm run dev:docker
-
-# Useful commands:
-docker compose logs -f          # View logs
-docker compose exec specifyr sh # Shell access
-docker compose down             # Stop containers
+pnpm install
+pnpm dev   # http://localhost:3000
 ```
 
-The dev compose bundles two parallel access paths:
+With Postgres (recommended — the full multi-tenant flow requires it):
 
-- **`http://localhost:10000`** — specifyr direct, bypassing auth. The
-  `SPECIFYR_DEV_USER_EMAIL` env-fallback is the "logged-in user" here, so
-  this is the fastest path for code iteration. Port = `SPECIFYR_PORT`
-  (default `PORT_BASE`=10000); see `.env.example` for the full scheme.
-- **`http://specifyr.localhost`** — full multi-user flow through Traefik
-  → Authentik (UI on `http://auth.localhost`, default login
-  `akadmin` / `akadmin-dev`). Use this to exercise the prod-shape auth
-  topology (forward-auth headers, per-user `users` rows, onboarding gate).
-  Set `SPECIFYR_DEV_USER_EMAIL=` empty in `.env` so the env-fallback does
-  not override the real Authentik headers.
+```bash
+docker compose up --build
+# specifyr direct  → http://localhost:10000 (uses SPECIFYR_DEV_USER_EMAIL)
+# multi-user flow  → http://specifyr.localhost (Traefik + Authentik)
+```
 
-## ACP (Agent Client Protocol)
+Copy `.env.example` to `.env` and at minimum set:
 
-specifyr speaks the [Agent Client Protocol](https://agentclientprotocol.com) in two directions:
+- `DATABASE_URL` — points the server at Postgres
+- `SPECIFYR_SECRET_KEY` — 32 random bytes hex, encrypts the per-project git PAT
 
-- **As a client** (input): any ACP-speaking coding agent (Codex, Claude, Gemini, … via ACP adapters) can be a backend. Configure Speckit agent selection in Settings and the matching `acp.<name>` binary/args in [src/core/app-config.js](src/core/app-config.js) or `.specifyr/config.json`.
-- **As a server** (output): `bin/specifyr-acp` is a stdio agent that external editors like Zed and AionUi can spawn to drive specifyr runs. See [docs/acp-integration.md](docs/acp-integration.md).
+See `.env.example` for the full env-var reference (Authentik bootstrap, host
+port scheme, etc.).
 
-Internally specifyr uses ACP `SessionUpdate` shapes as the lingua franca for all runner output, persisted disk events, and SSE stream payloads.
+## Schema migrations
 
-## Company runtime (multi-agent)
+Drizzle generates and applies migrations from
+`server/shared/database/schema.ts`:
 
-The company runtime turns specifyr into a multi-agent orchestrator. A "company" is declared via the [speckit-company](https://github.com/haex/speckit-company) extension and consists of a CEO agent (single point of contact) and worker agents in a reports-to graph. Each agent is a separate Hermes-Agent profile with its own `HERMES_HOME`, accumulating role-specific skills over time.
+```bash
+pnpm drizzle-kit generate --name <slug>
+```
 
-Components (in `src/`):
+Migrations apply automatically at Nitro startup via
+`server/plugins/db.ts`. Never hand-edit the SQL, snapshot, or journal files
+under `server/shared/database/migrations/` — always regenerate from a schema
+change.
 
-- `agents/spec-loader.js` — load `.specify/org/{constitution.md, agents/<role>.md}`
-- `core/capability-gate.js` — default-deny permission layer; sensitive grants always require user approval
-- `core/queue-poller.js` — chokidar watcher for `.specifyr/<company>/queue/<task>.yaml`
-- `core/worktree-manager.js` — per-task `git worktree` for isolated FS mutations
-- `core/company-runtime.js` — facade composing the above + per-agent runner factory (typically `HermesStreamingRunner` or a Docker-isolated runner)
-- `runners/hermes-paths.js` — deterministic `<project>/.hermes/<role>` path
-- `runners/hermes-streaming.js` — streams `hermes chat -q` stdout, translates to ACP SessionUpdate, passes `HERMES_HOME` via env per agent
+## Tests
 
-See [docs/company.md](docs/company.md) for the full integration model.
+```bash
+pnpm test          # unit + node tests
+pnpm test:unit     # browser-side speckit tests (vitest)
+pnpm test:node     # server-side + DB tests (node:test)
+```
+
+DB-backed tests are skipped automatically when `DATABASE_URL` is unset.
+
+## Project layout
+
+```
+app/             Nuxt frontend (pages, components, stores, composables)
+server/          Nitro server (REST API, auth, DB migrations)
+shared/          types shared by frontend and backend
+i18n/            translations (de, en)
+docs/plans/      design docs
+tests/           node:test (server, DB) + vitest (browser units)
+```

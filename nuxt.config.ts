@@ -89,9 +89,6 @@ export default defineNuxtConfig({
     componentDir: "./app/components/shadcn",
   },
   runtimeConfig: {
-    companyClaudeProxyUrl: process.env.COMPANY_CLAUDE_PROXY_URL ?? "",
-    companyOpsUrlBase:
-      process.env.COMPANY_OPS_URL_BASE ?? "http://specifyr:3000/mcp",
     public: {
       appName: "specifyr",
       // Public so the Logout link can point at it. Set per-deployment

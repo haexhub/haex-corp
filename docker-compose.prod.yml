@@ -7,7 +7,6 @@
 # Unterschied zu dev:
 #   - Image-Target `prod` statt `dev` (kein pnpm dev, kein HMR).
 #   - Kein Source-Bind-Mount; nur Runtime-Daten werden reingereicht.
-#   - LLM-Credentials und Speckit-Agent/Profile werden über Settings verwaltet.
 
 services:
   specifyr:
@@ -18,56 +17,22 @@ services:
     container_name: specifyr-prod
     restart: unless-stopped
     ports:
-      # Host-Port-Schema einheitlich mit dev (siehe docker-compose.yml).
-      # Override via SPECIFYR_PORT in .env.
       - "${SPECIFYR_PORT:-10000}:3000"
     environment:
       HOST: 0.0.0.0
       PORT: 3000
       NODE_ENV: production
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SPECIFYR_DATA_DIR: /data
-      SPECIFYR_CREDENTIALS_DIR: /credentials
-      # AES-256-GCM master key for llm_credentials + project secrets.
-      # Mandatory in prod — no file-fallback path is acceptable for a
-      # shared deployment. The claude-proxy (when deployed separately)
-      # must read the SAME value or oauth decryption fails.
+      # AES-256-GCM master key for the encrypted per-project git PAT
+      # (project_secrets in the per-org schema). Mandatory in prod.
       SPECIFYR_SECRET_KEY: ${SPECIFYR_SECRET_KEY:?SPECIFYR_SECRET_KEY required — generate with `openssl rand -hex 32`}
-      # Prod-Default: pinned GHCR-Image. Vor `docker compose up` setzen, z.B.
-      #   HERMES_AGENT_IMAGE=ghcr.io/haexhub/hermes-agent:sha-abc1234 docker compose -f docker-compose.prod.yml up
-      # Ohne expliziten Wert nimmt die Compose-Substitution `:latest` auf der
-      # Default-Branch — nur sinnvoll, wenn deployment-stabilität zweitrangig ist.
-      HERMES_AGENT_IMAGE: ${HERMES_AGENT_IMAGE:-ghcr.io/haexhub/hermes-agent:latest}
-      # Approval-Notification: Telegram-Channel. Setup-Anleitung in `.env.example`.
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-      APPROVAL_URL_BASE: ${APPROVAL_URL_BASE:-}
     volumes:
       - specifyr_data:/data
-      - specifyr_credentials:/credentials
-      # claude-agent-acp persistiert pro Chat-Session ein JSONL unter
-      # ~/.claude/projects/<cwd-hash>/<sessionId>.jsonl. Im prod-Image ist
-      # ~ = /home/node (Dockerfile prod-Stage hat USER node). Ohne diesen
-      # Mount ist der Agent-State nach jedem Container-Recreate weg → ACP
-      # session/load kann nicht greifen. Named volume statt bind-mount, weil
-      # der Inhalt für Operator-Inspektion irrelevant ist.
-      - specifyr_claude:/home/node/.claude
-      # Docker-Socket: gleiche Begründung wie in docker-compose.yml — erlaubt
-      # `docker run` von innen, um Hermes-Agent-Container zu spawnen. Effektiv
-      # Host-root für diesen Container; in Multi-User-Deployments revisiten.
-      - /var/run/docker.sock:/var/run/docker.sock
     networks:
-      companies:
+      default:
         aliases:
           - specifyr
     user: "${UID:-1000}:${GID:-1000}"
 
-networks:
-  companies:
-    name: companies
-    driver: bridge
-
 volumes:
   specifyr_data:
-  specifyr_credentials:
-  specifyr_claude:

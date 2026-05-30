@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Building2, KeyRound, LogIn, LogOut, MessageSquareCode, ShieldCheck, User as UserIcon } from "lucide-vue-next";
+import { Building2, LogIn, LogOut, MessageSquareCode, ShieldCheck, User as UserIcon } from "lucide-vue-next";
 
 const { me, isDevAuth, logout, devLogin } = useMe();
 </script>
@@ -46,21 +46,6 @@ const { me, isDevAuth, logout, devLogin } = useMe();
             <div class="font-medium">Organizations</div>
             <div class="mt-0.5 text-sm text-muted-foreground">
               Create orgs, invite members, share LLM credentials within a team.
-            </div>
-          </div>
-        </NuxtLink>
-      </li>
-      <li>
-        <NuxtLink
-          to="/settings/me/llm"
-          class="flex items-start gap-3 rounded-lg border border-border p-4 transition hover:bg-accent/50"
-        >
-          <KeyRound class="mt-0.5 size-5 shrink-0 opacity-80" />
-          <div>
-            <div class="font-medium">Hermes credentials (personal)</div>
-            <div class="mt-0.5 text-sm text-muted-foreground">
-              API keys for Hermes agents you run personally. Anthropic /
-              OpenAI / Google / OpenRouter, AES-256-GCM encrypted at rest.
             </div>
           </div>
         </NuxtLink>

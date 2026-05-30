@@ -37,37 +37,16 @@ services:
       # `confirm-modules-purge=false` wirkt in 11.0.9 nicht; `CI=true` ist
       # der dokumentierte Fallback und reicht hier.
       CI: "true"
-      # Image-Tag für Agent-Container (falls verwendet). Default ist lokal gebaut.
-      HERMES_AGENT_IMAGE: ${HERMES_AGENT_IMAGE:-hermes-agent:dev}
       # Pfade zum Laufzeit-Datenverzeichnis (~/.specifyr). Im Container liegt es
       # unter /data; der Docker-Daemon löst Bind-Mount-Sources gegen das HOST-FS auf,
       # daher muss SPECIFYR_HOST_DATA_DIR auf den Host-Pfad zeigen.
       SPECIFYR_DATA_DIR: /data
       SPECIFYR_HOST_DATA_DIR: ${SPECIFYR_HOST_DATA_DIR:-${HOME}/.specifyr}
-      SPECIFYR_CREDENTIALS_DIR: /credentials
       # Host-Pfad zu diesem Repo (= Host-Equivalent von /app im Container).
-      # Wird gebraucht, wenn specifyr via /var/run/docker.sock Sibling-Container
-      # spawnt: deren Bind-Mount-Sources werden vom Host-Daemon aufgelöst, nicht
-      # gegen das Container-FS. Default `${PWD}` — passt für das Standard-Setup.
       SPECIFYR_HOST_PROJECT_ROOT: ${SPECIFYR_HOST_PROJECT_ROOT:-${PWD}}
-      # Approval-Notification: Telegram-Channel. Falls beide Vars gesetzt sind,
-      # registriert start.post.ts einen TelegramTransport. Sonst No-op-Fallback.
-      # Werte landen in `.env` (gitignored), Setup-Anleitung steht in
-      # `.env.example`.
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-      # Optional: Deep-Link-Base. Ohne den ist die Telegram-Nachricht rein
-      # informativ; mit Wert wird `<base>/approvals/<id>` als klickbarer Link
-      # ergänzt.
-      APPROVAL_URL_BASE: ${APPROVAL_URL_BASE:-}
-      # URL des lokalen claude-proxy-Containers. Wenn gesetzt, routen alle
-      # Hermes-Agenten ihre Anthropic-API-Calls darüber (nutzt Claude-Abo-OAuth).
-      COMPANY_CLAUDE_PROXY_URL: http://claude-proxy:8080
-      # AES-256-GCM master key. Required for the claude-proxy to decrypt
-      # oauth_credentials_data rows; specifyr itself also uses it for
-      # llm_credentials + project secrets. Set to identical value in both
-      # services. Without it, specifyr falls back to /data/master.key
-      # which the proxy can't read — and the OAuth flow breaks.
+      # AES-256-GCM master key for the encrypted project secrets table
+      # (e.g. the git-remote PAT in project_secrets). Generate with
+      # `openssl rand -hex 32` and pin in .env.
       SPECIFYR_SECRET_KEY: ${SPECIFYR_SECRET_KEY:?SPECIFYR_SECRET_KEY required — generate with `openssl rand -hex 32` and add to .env}
       # Liste an Emails, die beim user-upsert `is_platform_admin=true` bekommen
       # (server/shared/middleware/auth.ts). Default deckt den Authentik-Bootstrap
@@ -95,23 +74,9 @@ services:
       - /app/node_modules
       - /app/.nuxt
       - /app/.output
-      # Bundled local extensions werden im Dockerfile-dev-Stage geklont. Ein named volume
-      # statt anonymous volume — Docker Compose recreated anonymous volumes bei jedem
-      # `docker compose up --build`, was den Clone aus dem Image jedes Mal neu kopiert
-      # statt persistent zu halten.
+      # Bundled local extensions werden im Dockerfile-dev-Stage geklont.
       - specifyr_extensions:/app/extensions
-      # Per-user/org OAuth credential homes managed by specifyr.
-      - ${HOME}/.specifyr/credentials:/credentials
-      # Docker-Socket: erlaubt der specifyr-App, per `docker run` Hermes-Agent-Container
-      # zu spawnen. SICHERHEITS-HINWEIS: dieser Mount = effektiv root auf dem Host für
-      # alles innerhalb dieses Containers. Acceptabel für Solo-Dev-Setup; in Multi-User-
-      # /Cloud-Deployments stattdessen einen privilegierten Sidecar oder rootless-docker
-      # erwägen. Wir mounten rw, weil `docker run` schreibend auf den Socket zugreifen muss.
-      - /var/run/docker.sock:/var/run/docker.sock
     networks:
-      # specifyr und alle gespawnten Hermes-Agent-Container teilen sich dieses
-      # benutzerdefinierte Bridge-Network. Agenten erreichen die Orchestrator-API
-      # als http://specifyr:3000.
       companies:
         aliases:
           - specifyr
@@ -127,45 +92,6 @@ services:
     # UID/GID-Mapping für Bind-Mounts (Linux). Auf macOS/Windows ignoriert Docker das.
     # Falls dein Host-User nicht UID 1000 hat: `USER_UID=$(id -u) USER_GID=$(id -g) docker compose up`
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
-    # Docker-Socket-Gruppe: erlaubt dem node-User im Container, den gemounteten
-    # Docker-Socket zu nutzen. DOCKER_GID auf die Host-GID der docker-Gruppe setzen
-    # (Standard: 999 auf Ubuntu/Debian). `getent group docker | cut -d: -f3` liefert den Wert.
-    group_add:
-      - "${DOCKER_GID:-999}"
-
-  claude-proxy:
-    image: haex-claude-proxy:dev
-    container_name: claude-proxy
-    environment:
-      # Multi-tenant session-token resolver. Without this the proxy
-      # returns 503 on every /v1/messages because it can't map the
-      # incoming runner-session token to a row in llm_credentials.
-      # The proxy authenticates as the dedicated `haex_claude_proxy`
-      # role so Postgres RLS policies (defined in schema.ts) limit
-      # SELECT/UPDATE to rows matching `app.current_owner_*` settings.
-      # Dev password lives in docker/postgres-init/03-create-haex-claude-
-      # proxy-role.sql; prod is provisioned by Ansible.
-      DATABASE_URL: ${PROXY_DATABASE_URL:-postgres://haex_claude_proxy:devpw@postgres:5432/specifyr}
-      # AES-256-GCM master key shared with specifyr — the proxy uses it
-      # to decrypt oauth_credentials_data fetched from llm_credentials
-      # at request time. Wrong / missing → every request 503.
-      SPECIFYR_SECRET_KEY: ${SPECIFYR_SECRET_KEY:?SPECIFYR_SECRET_KEY required — generate with `openssl rand -hex 32` and add to .env}
-    # No bind-mount for credentials any more — the proxy now pulls
-    # encrypted blobs from the DB and stages plaintext into the per-
-    # request tmpfs below for the spawned `claude` subprocess. Nothing
-    # persists past the spawn lifetime.
-    tmpfs:
-      # uid=1000 matches the `node` user inside haex-claude-proxy:dev
-      # (Debian image, USER node, default uid 1000). size kept small —
-      # each staged HOME is ~1 KB; we just need headroom for concurrent
-      # requests.
-      - /run/credentials:uid=1000,gid=1000,mode=0700,size=8m
-    networks:
-      - companies
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
 
   postgres:
     image: postgres:17-alpine
