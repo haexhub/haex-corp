@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { pathToFileURL } from "node:url";
-import { projectCwd, loadEventStore } from "./specifyr-stores";
+import { projectCwd } from "./specifyr-stores";
 import { extensionsDir, projectArtifactsDir } from "./data-dirs";
-import { getAppConfigModule } from "./app-config";
+import { findLocalExtensionPath } from "./app-config";
 import { getOrgExtensionBySlug } from "./org-extensions-store";
+import { runCommand } from "./process-helpers";
 
 export interface ExtensionInstallRecord {
   slug: string;
@@ -18,17 +18,6 @@ export interface ExtensionsManifest {
   slug: string;
   extensions: ExtensionInstallRecord[];
   updatedAt: string | null;
-}
-
-async function loadRunCommand() {
-  const url = pathToFileURL(path.join(process.cwd(), "src/utils/process.js")).href;
-  return (await import(url)) as {
-    runCommand: (
-      cmd: string,
-      args: string[],
-      opts?: { cwd?: string; input?: string }
-    ) => Promise<{ ok: boolean; stdout?: string; stderr?: string }>;
-  };
 }
 
 function manifestPathFor(orgId: string, projectSlug: string): string {
@@ -57,11 +46,11 @@ export async function installExtensionsInProject(
   orgId: string,
   projectSlug: string,
   extensionSlugs: string[],
-  source: "auto" | "manual" = "manual"
+  source: "auto" | "manual" = "manual",
 ): Promise<{ manifest: ExtensionsManifest; installed: ExtensionInstallRecord[]; skipped: string[] }> {
   const manifest = await readManifest(orgId, projectSlug);
   const alreadyInstalled = new Set(
-    manifest.extensions.filter((e) => e.status === "installed").map((e) => e.slug)
+    manifest.extensions.filter((e) => e.status === "installed").map((e) => e.slug),
   );
   const toInstall = extensionSlugs
     .map((s) => s.trim())
@@ -73,12 +62,10 @@ export async function installExtensionsInProject(
     return { manifest, installed: [], skipped };
   }
 
-  const { runCommand } = await loadRunCommand();
   const cwd = projectCwd(orgId, projectSlug);
 
-  // Ensure the community catalog is registered as install-allowed. spec-kit's built-in community
-  // catalog is discovery-only, so `extension add` would refuse otherwise. Idempotent best-effort:
-  // if the catalog is already registered, the CLI fails gracefully and we move on.
+  // Ensure the community catalog is registered as install-allowed. Idempotent
+  // best-effort: if already registered, the CLI fails gracefully.
   await runCommand(
     "specify",
     [
@@ -90,23 +77,16 @@ export async function installExtensionsInProject(
       "community-allowed",
       "--priority",
       "1",
-      "--install-allowed"
+      "--install-allowed",
     ],
-    { cwd }
+    { cwd },
   );
 
   const installed: ExtensionInstallRecord[] = [];
-  const { findLocalExtensionPath } = await getAppConfigModule();
 
   for (const slug of toInstall) {
-    // Resolution order:
-    //   1. org-scoped — DB row is the source of truth. If the row
-    //      exists but the on-disk clone is missing, fail closed rather
-    //      than letting the slug fall through to a deployment/community
-    //      extension that happens to share the name.
-    //   2. app-config localExtensions (deployment-global + bundled).
-    //   3. global extensions dir.
-    //   4. community catalog (no `--dev`, by slug).
+    // Resolution order: org-scoped → app-config localExtensions → global
+    // extensions dir → community catalog.
     let localPath: string | null = null;
     let resolutionFailed = false;
     let resolutionFailureMessage = "";
@@ -130,7 +110,9 @@ export async function installExtensionsInProject(
       try {
         await fs.access(globalPath);
         localPath = globalPath;
-      } catch { /* not in global dir */ }
+      } catch {
+        // not in global dir
+      }
     }
     let result: { ok: boolean; stdout?: string; stderr?: string };
     if (resolutionFailed) {
@@ -148,28 +130,15 @@ export async function installExtensionsInProject(
       status: result.ok ? "installed" : "failed",
       message: result.ok
         ? result.stdout?.trim() || undefined
-        : (result.stderr || result.stdout || "specify extension add failed").trim()
+        : (result.stderr || result.stdout || "specify extension add failed").trim(),
     };
     installed.push(record);
-    // Replace any prior record for the same slug (e.g., a previous failed attempt)
     manifest.extensions = manifest.extensions.filter((e) => e.slug !== slug);
     manifest.extensions.push(record);
   }
 
   manifest.updatedAt = new Date().toISOString();
   await writeManifest(orgId, projectSlug, manifest);
-
-  const events = await loadEventStore(orgId, projectSlug);
-  for (const record of installed) {
-    await events.append({
-      type: "extension_installed",
-      level: record.status === "installed" ? "info" : "warning",
-      slug: projectSlug,
-      createdAt: record.installedAt,
-      title: `Extension '${record.slug}' ${record.status === "installed" ? "installiert" : "fehlgeschlagen"}`,
-      message: record.message
-    });
-  }
 
   return { manifest, installed, skipped };
 }

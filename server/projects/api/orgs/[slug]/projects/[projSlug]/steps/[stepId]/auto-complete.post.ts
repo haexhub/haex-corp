@@ -3,9 +3,8 @@ import path from "node:path";
 import { z } from "zod";
 import {
   loadStepStateStore,
-  loadEventStore,
   projectCwd,
-  assertProjectExists
+  assertProjectExists,
 } from "@su/specifyr-stores";
 import { getProjectWorkflowId } from "@su/workflows";
 import { SPEC_KIT_WORKFLOW, loadInstalledExtensionWorkflow } from "@su/workflow-discovery";
@@ -35,7 +34,7 @@ export default defineEventHandler(async (event) => {
   // requireArtifact=false (default): also complete steps with no artifacts after a turn.
   const requireArtifact = body.requireArtifact === true;
 
-  const { store } = await loadStepStateStore();
+  const { store } = loadStepStateStore();
   const current = await store.getStep(orgId, slug, stepId);
 
   // Already complete — nothing to do.
@@ -62,15 +61,6 @@ export default defineEventHandler(async (event) => {
   }
 
   const updated = await store.markComplete(orgId, slug, stepId, body.sessionId ?? null);
-  const events = await loadEventStore(orgId, slug);
-  await events.append({
-    type: "step_auto_completed",
-    level: "success",
-    slug,
-    stepId,
-    createdAt: new Date().toISOString(),
-    title: `Step '${stepId}' automatisch als erledigt markiert`
-  });
 
   triggerAutoPush(orgId, slug);
 

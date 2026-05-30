@@ -14,7 +14,6 @@
  */
 
 import crypto from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -42,21 +41,21 @@ async function ensureMigrations(): Promise<void> {
   if (_migrationsApplied) return;
   const db = getDb();
   if (!db) return;
-  // Migrations create RLS policies that target the `haex_claude_proxy`
-  // role. In dev, docker-compose's `docker/postgres-init/` provisions
-  // the role on first boot. For an ad-hoc test database (created by
-  // CREATE DATABASE against an existing cluster) those init scripts
-  // never re-run, so we replay the same SQL here. Code-first: this is
-  // the same conditional create as the init script, not a manual
-  // out-of-band CREATE ROLE.
-  const roleSql = await readFile(
-    path.resolve(
-      process.cwd(),
-      "docker/postgres-init/03-create-haex-claude-proxy-role.sql",
-    ),
-    "utf8",
-  );
-  await db.execute(sql.raw(roleSql));
+  // Migration 0000_baseline creates an RLS policy `TO "haex_claude_proxy"`
+  // that requires the role to already exist. The role itself is no longer
+  // needed at runtime (migration 0015 dropped both the table and its
+  // policies), but historic migrations still reference it, so a fresh DB
+  // can't replay 0000 → 0015 in order without it. Idempotent — re-running
+  // against an existing role is a no-op.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'haex_claude_proxy') THEN
+        CREATE ROLE haex_claude_proxy LOGIN PASSWORD 'devpw';
+      END IF;
+    END
+    $$;
+  `);
   await migrate(db, {
     migrationsFolder: path.resolve(process.cwd(), "server/shared/database/migrations"),
   });
@@ -72,14 +71,13 @@ async function ensureMigrations(): Promise<void> {
  * don't accidentally get blown away by a stale test setup.
  */
 const TABLES = [
-  "runner_sessions",
-  "llm_credentials",
   "org_invites",
   "org_extensions",
   "org_member_permissions",
+  "project_memberships",
   "org_memberships",
-  "orgs",
   "projects",
+  "orgs",
   "users",
 ];
 

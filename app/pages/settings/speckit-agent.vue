@@ -60,12 +60,7 @@ function remove(id: string) {
           Provider identities for the browser-side Speckit chat. Keys live
           in this browser only and never reach the Specifyr server. Set one
           active to use it as the model for Speckit chat. Each device needs
-          its own setup — there is no cross-device sync. For Hermes agents,
-          use
-          <NuxtLink to="/settings/me/llm" class="underline hover:text-foreground">
-            Hermes credentials
-          </NuxtLink>
-          instead.
+          its own setup — there is no cross-device sync.
         </p>
       </div>
       <Button

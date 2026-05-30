@@ -1,13 +1,45 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { pathToFileURL } from "node:url";
-import { installExtensionsInProject } from "./extension-install";
+import { installExtensionsInProject, type ExtensionInstallRecord } from "./extension-install";
 import { dataDir, orgProjectsDir, projectArtifactsDir } from "./data-dirs";
 import { getProjectByOrgAndSlug } from "./project-store";
+import { SPECIFYR_DIR, ensureDir, exists, slugify, writeJson, writeText } from "./fs-helpers";
+import { runCommand } from "./process-helpers";
 
-async function importModule<T = Record<string, unknown>>(relativePath: string): Promise<T> {
-  const moduleUrl = pathToFileURL(path.join(process.cwd(), relativePath)).href;
-  return import(moduleUrl) as Promise<T>;
+function projectArtifactDir(cwd: string, orgId: string, slug: string): string {
+  return path.join(cwd, SPECIFYR_DIR, orgId, slug);
+}
+
+interface ProjectMeta {
+  slug: string;
+  title: string;
+  description: string;
+  createdAt: string;
+  projectRoot: string;
+  workflow: string;
+  specifyInit: {
+    attemptedAt: string;
+    status: "completed" | "pending_manual_setup";
+    command: string;
+    message: string;
+  };
+}
+
+async function createArtifactDir(
+  cwd: string,
+  orgId: string,
+  slug: string,
+  meta: ProjectMeta,
+): Promise<void> {
+  const baseDir = projectArtifactDir(cwd, orgId, slug);
+  if (await exists(baseDir)) {
+    throw new Error(`Project '${slug}' already exists in org.`);
+  }
+  await ensureDir(baseDir);
+  await writeText(path.join(baseDir, "spec.md"), "");
+  await writeText(path.join(baseDir, "plan.md"), "");
+  await writeText(path.join(baseDir, "tasks.md"), "");
+  await writeJson(path.join(baseDir, "meta.json"), meta);
 }
 
 export async function createProjectRecord(options: {
@@ -17,15 +49,6 @@ export async function createProjectRecord(options: {
   workflow?: string;
   ownerOrgId?: string | null;
 }) {
-  const [{ ArtifactStore }, { runCommand }, { ensureDir, slugify }] = await Promise.all([
-    importModule<{ ArtifactStore: new (cwd?: string) => any }>("src/core/artifact-store.js"),
-    importModule<{ runCommand: typeof import("../../../src/utils/process.js").runCommand }>("src/utils/process.js"),
-    importModule<{
-      ensureDir: typeof import("../../../src/utils/fs.js").ensureDir;
-      slugify: typeof import("../../../src/utils/fs.js").slugify;
-    }>("src/utils/fs.js")
-  ]);
-
   const title = options.title.trim();
   const description = options.description.trim();
   const slug = slugify(title);
@@ -33,62 +56,48 @@ export async function createProjectRecord(options: {
   if (!slug) {
     throw new Error("Could not derive a valid project slug.");
   }
-
   if (!options.ownerOrgId) {
     throw new Error("ownerOrgId is required");
   }
+
   const projectsParent = orgProjectsDir(options.ownerOrgId);
   const projectRoot = path.join(projectsParent, slug);
-  const store = new ArtifactStore(dataDir());
-
   await ensureDir(projectsParent);
 
-  // Reject duplicates BEFORE any filesystem side effects. If a row already
-  // owns this (orgId, slug), running `specify init` / `git init` / file
-  // writes would either fail loudly partway through or, worse, scribble into
-  // a directory another project legitimately owns. The DB unique constraint
-  // is the ultimate safety net; this pre-check just avoids the side-effect
-  // window.
   const existingRow = await getProjectByOrgAndSlug(options.ownerOrgId, slug);
   if (existingRow) {
     const err: Error & { statusCode?: number; code?: string } = new Error(
-      `A project with slug '${slug}' already exists in this organization.`
+      `A project with slug '${slug}' already exists in this organization.`,
     );
     err.statusCode = 409;
     err.code = "PROJECT_SLUG_TAKEN";
     throw err;
   }
 
-  // Orphan check: if FS dirs exist but no DB row owns them (e.g. from a
-  // previously failed create), wipe the FS leftovers before proceeding.
-  // Without this, `specify init` would fail with "directory exists" or
-  // ArtifactStore.createProject would throw "already exists" even though
-  // the project was never actually created. Cost: one extra DB hit per
-  // create — acceptable.
-  {
-    const artifactDir = projectArtifactsDir(options.ownerOrgId, slug);
-    for (const stale of [artifactDir, projectRoot]) {
-      try {
-        const stat = await fs.stat(stale);
-        if (stat) {
-          console.warn(`[project-creation] removing orphan dir: ${stale}`);
-          await fs.rm(stale, { recursive: true, force: true });
-        }
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-      }
+  // Orphan check: clean leftover FS dirs from a previously-failed create.
+  const artifactDir = projectArtifactsDir(options.ownerOrgId, slug);
+  for (const stale of [artifactDir, projectRoot]) {
+    try {
+      await fs.stat(stale);
+      console.warn(`[project-creation] removing orphan dir: ${stale}`);
+      await fs.rm(stale, { recursive: true, force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
     }
   }
 
-  // `specify init` is interactive by default (arrow-key menu for AI selection, git-init prompt).
-  // --ai generic and --no-git make it fully non-interactive so spawn() from Nuxt can succeed.
-  // We run git init separately below so each project has its own repo boundary — this prevents
-  // coding agents from walking up to the specifyr root and loading platform context.
+  // `specify init <slug> --ai generic --no-git`: non-interactive bootstrap so
+  // the spec-kit directory layout (.specify/) is created. Git init runs
+  // separately below so each project has its own repo boundary.
   const initArgs = ["init", slug, "--ai", "generic", "--no-git"];
   const initResult = await runCommand("specify", initArgs, { cwd: projectsParent });
+
   const workflow = options.workflow ?? "spec-kit";
-  const meta = {
+  const meta: ProjectMeta = {
+    slug,
+    title,
     description,
+    createdAt: new Date().toISOString(),
     projectRoot,
     workflow,
     specifyInit: {
@@ -97,27 +106,30 @@ export async function createProjectRecord(options: {
       command: `specify ${initArgs.join(" ")}`,
       message: initResult.ok
         ? initResult.stdout || "Spec Kit initialized successfully."
-        : initResult.stderr || "Could not run `specify init` automatically."
-    }
+        : initResult.stderr || "Could not run `specify init` automatically.",
+    },
   };
 
   if (!initResult.ok) {
+    // `specify` binary missing / non-zero exit: we still finish the create so
+    // the user gets a writable project dir, but log loudly so an operator
+    // notices that scaffold steps were skipped. The status flag in meta.json
+    // (`pending_manual_setup`) is the durable record.
+    console.warn(
+      `[project-creation] specify init ${slug} failed (status=pending_manual_setup): ` +
+        (initResult.stderr || "Command not found"),
+    );
     await ensureDir(projectRoot);
   }
 
-  // Initialize a git repository in the project directory so coding agents treat it as an
-  // independent project root, preventing context bleed from the specifyr platform repo.
-  // (specifyr/.gitignore already excludes projects/, so there's no nested-repo issue.)
-  // Failures used to be silently ignored, which left projects without a repo
-  // boundary while the comment claimed it was required — surface them now.
   const gitInit = await runCommand("git", ["init", "-b", "main"], { cwd: projectRoot });
   if (!gitInit.ok) {
     throw new Error(gitInit.stderr || "Failed to initialize git repository.");
   }
   const gitConfigEmail = await runCommand(
     "git",
-    ["config", "user.email", "agent@specifyr.local"],
-    { cwd: projectRoot }
+    ["config", "user.email", "specifyr@local"],
+    { cwd: projectRoot },
   );
   if (!gitConfigEmail.ok) {
     throw new Error(gitConfigEmail.stderr || "Failed to set git user.email.");
@@ -129,26 +141,7 @@ export async function createProjectRecord(options: {
     throw new Error(gitConfigName.stderr || "Failed to set git user.name.");
   }
 
-  // Write provider-neutral project guidance for ACP-backed coding agents.
-  const agentsMd = [
-    `# ${title} — Company Workspace`,
-    ``,
-    `Dieses Projekt ist ein spec-gesteuertes Multi-Agenten-Unternehmen, aufgebaut mit dem speckit-company Framework.`,
-    ``,
-    `## Operationen hier`,
-    `- Agent-Spezifikation und -Konfiguration (\`.specify/org/\`)`,
-    `- Company-Workflow-Schritte (init, charter, hire, validate, start)`,
-    `- Strategie-Arbeit wenn Agenten aktiv sind`,
-    ``,
-    `## Nicht hier`,
-    `Dies ist **kein Softwareentwicklungs-Projekt**. Kein Vue/TypeScript/Nuxt-Code.`,
-    `Beschränke dich auf Dateien in diesem Verzeichnis.`
-  ].join("\n");
-  await fs.writeFile(path.join(projectRoot, "AGENTS.md"), agentsMd);
-
   // Exclude installed extensions from git — they have their own repos.
-  // `specify init` may have already written a .gitignore (template defaults,
-  // OS junk patterns); merge the rule in instead of overwriting their content.
   const gitignorePath = path.join(projectRoot, ".gitignore");
   const existingGitignore = await fs
     .readFile(gitignorePath, "utf8")
@@ -161,55 +154,22 @@ export async function createProjectRecord(options: {
     const needsNewline = existingGitignore.length > 0 && !existingGitignore.endsWith("\n");
     await fs.writeFile(
       gitignorePath,
-      `${existingGitignore}${needsNewline ? "\n" : ""}${extensionIgnoreRule}\n`
+      `${existingGitignore}${needsNewline ? "\n" : ""}${extensionIgnoreRule}\n`,
     );
   }
 
-  // The community catalog is discovery-only by default in spec-kit. Our UI browses extensions
-  // from there, so we need to opt-in to installation. Registered with priority 1 to take
-  // precedence over the built-in community catalog (priority 2, discovery-only).
-  if (initResult.ok) {
-    await runCommand(
-      "specify",
-      [
-        "extension",
-        "catalog",
-        "add",
-        "https://raw.githubusercontent.com/github/spec-kit/main/extensions/catalog.community.json",
-        "--name",
-        "community-allowed",
-        "--priority",
-        "1",
-        "--install-allowed"
-      ],
-      { cwd: projectRoot }
-    );
-  }
+  await createArtifactDir(dataDir(), options.ownerOrgId, slug, meta);
 
-  await store.createProject(options.ownerOrgId, slug, title, "", meta);
-  await store.saveArtifact(options.ownerOrgId, slug, "run", {
-    slug,
-    currentStage: "draft",
-    status: "draft",
-    approvals: [],
-    completedTaskIds: [],
-    failedTaskIds: [],
-    taskResults: {},
-    updatedAt: new Date().toISOString()
-  });
-
-  // Install chosen extensions (best-effort; failures are recorded but don't abort creation).
-  // installExtensionsInProject handles local extensions via --dev and writes the manifest.
   const chosenExtensions = Array.from(
-    new Set((options.extensions ?? []).map((x) => String(x).trim()).filter(Boolean))
+    new Set((options.extensions ?? []).map((x) => String(x).trim()).filter(Boolean)),
   );
-  let extensionRecords: import("./extension-install").ExtensionInstallRecord[] = [];
+  let extensionRecords: ExtensionInstallRecord[] = [];
   if (initResult.ok && chosenExtensions.length > 0) {
     const { manifest } = await installExtensionsInProject(
       options.ownerOrgId,
       slug,
       chosenExtensions,
-      "auto"
+      "auto",
     );
     extensionRecords = manifest.extensions;
   }
@@ -220,6 +180,6 @@ export async function createProjectRecord(options: {
     description,
     projectRoot,
     specifyInit: meta.specifyInit,
-    extensions: extensionRecords
+    extensions: extensionRecords,
   };
 }

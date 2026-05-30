@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { loadStepStateStore, loadEventStore } from "@su/specifyr-stores";
+import { loadStepStateStore } from "@su/specifyr-stores";
 import { triggerAutoPush } from "@su/repository-autosync";
 import { parseBody, parseParams, stepParams } from "@su/validation";
 
@@ -13,20 +13,9 @@ export default defineEventHandler(async (event) => {
   const { stepId } = parseParams(event, stepParams);
   const body = await parseBody(event, completeSchema);
 
-  const { store } = await loadStepStateStore();
-  const events = await loadEventStore(orgId, slug);
+  const { store } = loadStepStateStore();
 
   const updated = await store.markComplete(orgId, slug, stepId, body.sessionId ?? null);
-
-  await events.append({
-    type: "step_marked_complete",
-    level: "success",
-    slug,
-    stepId,
-    sessionId: body.sessionId,
-    createdAt: new Date().toISOString(),
-    title: `Step '${stepId}' als erledigt markiert`
-  });
 
   triggerAutoPush(orgId, slug);
 

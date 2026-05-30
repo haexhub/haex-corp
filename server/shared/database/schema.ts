@@ -2,14 +2,10 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
-  cidr,
   foreignKey,
   index,
   integer,
   jsonb,
-  pgPolicy,
-  pgRole,
-  pgSchema,
   pgTable,
   primaryKey,
   text,
@@ -18,16 +14,6 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-
-// Pre-existing Postgres role for haex-claude-proxy. CREATE ROLE +
-// Passwort-Lifecycle managt die Ansible-Role (Passwort lebt in
-// secrets.yml, gehört nicht in Migrations). Table-level GRANTs auf
-// runner_sessions + llm_credentials kommen aus einer Drizzle-Migration
-// (siehe migrations/0001_grant_claude_proxy_access.sql), damit Schema-
-// Änderungen + zugehörige Rechte atomar zusammen ausgerollt werden.
-// Hier nur als `existing()` referenziert, damit Drizzle Policies auf
-// diese Rolle targeten kann ohne die Rolle selbst zu generieren.
-export const haexClaudeProxyRole = pgRole("haex_claude_proxy").existing();
 
 // Mirror of Authentik identity. UPSERT'd by the auth middleware on the
 // first request from a previously-unseen email. `email` is the natural
@@ -75,36 +61,7 @@ export const orgs = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // /24 from SPECIFYR_BRIDGE_POOL, allocated at org-create, fixed for
-    // the lifetime of the org. Used later by `docker network create
-    // --subnet=...` and Specifyr's IPAM when picking container_ip for
-    // agent runs. Nullable because pre-existing rows get backfilled by
-    // migration 0006; new rows are always populated by the allocator.
-    bridgeSubnet: cidr("bridge_subnet"),
-    // Org-create is a saga (DDL commit, then later vault HTTP call). Only
-    // 'ready' orgs may spawn agents; 'pending_vault_init' means the per-
-    // org schema exists but DEKs/keys haven't been provisioned by vault
-    // yet. The vault HTTP call is Phase 3 — Phase 1 leaves new orgs in
-    // 'pending_vault_init' indefinitely and the agent-start guard returns
-    // 503.
-    initStatus: text("init_status", {
-      enum: ["pending_vault_init", "ready"],
-    }).notNull().default("pending_vault_init"),
   },
-  (t) => ({
-    // Partial unique: NULLs allowed during the 0006 backfill window and
-    // for any row that pre-dates the allocator, but two orgs may never
-    // share a populated subnet (network-isolation invariant).
-    bridgeSubnetUq: uniqueIndex("orgs_bridge_subnet_uq")
-      .on(t.bridgeSubnet)
-      .where(sql`${t.bridgeSubnet} IS NOT NULL`),
-    // Allocator only ever produces /24s; reject anything else at the DB
-    // boundary so a buggy hand-insert can't break the IPAM assumption.
-    bridgeSubnetIs24: check(
-      "orgs_bridge_subnet_is_24_chk",
-      sql`${t.bridgeSubnet} IS NULL OR masklen(${t.bridgeSubnet}) = 24`,
-    ),
-  }),
 );
 
 export type Org = typeof orgs.$inferSelect;
@@ -209,202 +166,6 @@ export const orgInvites = pgTable("org_invites", {
 
 export type OrgInvite = typeof orgInvites.$inferSelect;
 export type NewOrgInvite = typeof orgInvites.$inferInsert;
-
-// LLM provider credentials. Polymorphic owner: user-personal or
-// org-shared (Phase 5 wires the org case into the runner). Encrypted
-// fields use the same AES-256-GCM master key as secrets-store.ts —
-// stored as hex strings (text), not bytea, so the schema stays
-// portable to non-Postgres backends if we ever swap.
-export const llmCredentials = pgTable(
-  "llm_credentials",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    ownerKind: text("owner_kind", { enum: ["user", "org"] }).notNull(),
-    ownerId: uuid("owner_id").notNull(),
-
-    provider: text("provider", {
-      // openrouter behaves as an OpenAI-compatible gateway in front of
-      // many model families — single key, flexible model strings like
-      // `anthropic/claude-sonnet-4-5`. base_url is the differentiator.
-      enum: ["anthropic", "openai", "google", "openrouter"],
-    }).notNull(),
-    mode: text("mode", { enum: ["api_key", "oauth_claude"] }).notNull(),
-    displayName: text("display_name").notNull(),
-
-    // api_key mode: encrypted blob. NULL when mode='oauth_claude' (Phase 8).
-    apiKeyIv: text("api_key_iv"),
-    apiKeyTag: text("api_key_tag"),
-    apiKeyData: text("api_key_data"),
-
-    // oauth_claude mode: OAuth-Credentials werden AES-256-GCM-verschlüsselt
-    // direkt in der DB persistiert (kein FS, kein Volume-Mount mehr). Der
-    // Plaintext ist das raw JSON aus `~/.claude/.credentials.json`, das die
-    // Claude-CLI während des OAuth-Logins schreibt. Master-Key kommt aus
-    // SPECIFYR_SECRET_KEY (siehe secrets-store.ts).
-    oauthStatus: text("oauth_status", {
-      enum: ["pending", "authorized", "expired"],
-    }),
-    oauthAuthorizedAt: timestamp("oauth_authorized_at", { withTimezone: true }),
-    oauthCredentialsIv: text("oauth_credentials_iv"),
-    oauthCredentialsTag: text("oauth_credentials_tag"),
-    oauthCredentialsData: text("oauth_credentials_data"),
-    // Optional Ablaufzeitpunkt aus dem OAuth-Response. Bei Anthropic Pro/Max
-    // ist der refresh_token langlebig, der access_token läuft alle paar Min
-    // ab — der claude-proxy refresht beim Spawn und schreibt zurück.
-    oauthExpiresAt: timestamp("oauth_expires_at", { withTimezone: true }),
-
-    // base_url: per-provider override or the gateway URL (openrouter
-    // points at https://openrouter.ai/api/v1). Stored on the credential
-    // because it's infrastructure metadata, not per-request choice.
-    baseUrl: text("base_url"),
-    enabled: boolean("enabled").notNull().default(true),
-
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (t) => [
-    index("llm_credentials_owner_idx").on(
-      t.ownerKind,
-      t.ownerId,
-      t.provider,
-      t.enabled,
-    ),
-    unique("llm_credentials_owner_provider_name_uq").on(
-      t.ownerKind,
-      t.ownerId,
-      t.provider,
-      t.displayName,
-    ),
-    // RLS für haex-claude-proxy: er darf nur Zeilen sehen/refreshen, deren
-    // Owner per Session-Setting freigeschaltet ist. Specifyr (postgres user)
-    // umgeht RLS implizit als Tabellen-Owner — Owner-Filter dort weiterhin
-    // auf Code-Ebene via existing WHERE-Klauseln. Der proxy MUSS vor jedem
-    // Query `SET LOCAL app.current_owner_kind/id` setzen, sonst sieht er
-    // nichts (NULL-Setting → Filter trifft nicht zu).
-    // Least-privilege: separate SELECT + UPDATE statt FOR ALL. Proxy
-    // braucht weder INSERT noch DELETE — Specifyr legt Rows an, Proxy
-    // schreibt nur refreshte Tokens via UPDATE zurück.
-    pgPolicy("llm_credentials_proxy_owner_isolation_select", {
-      as: "permissive",
-      for: "select",
-      to: haexClaudeProxyRole,
-      using: sql`(owner_kind = current_setting('app.current_owner_kind', true) AND owner_id::text = current_setting('app.current_owner_id', true))`,
-    }),
-    pgPolicy("llm_credentials_proxy_owner_isolation_update", {
-      as: "permissive",
-      for: "update",
-      to: haexClaudeProxyRole,
-      using: sql`(owner_kind = current_setting('app.current_owner_kind', true) AND owner_id::text = current_setting('app.current_owner_id', true))`,
-      withCheck: sql`(owner_kind = current_setting('app.current_owner_kind', true) AND owner_id::text = current_setting('app.current_owner_id', true))`,
-    }),
-  ],
-).enableRLS();
-
-export type LlmCredential = typeof llmCredentials.$inferSelect;
-export type NewLlmCredential = typeof llmCredentials.$inferInsert;
-
-// Agent runtime selection per owner + workflow purpose. Credentials
-// answer "how do we authenticate?"; this table answers "which agent,
-// provider, and model should run this workflow?".
-//
-// `purpose='speckit'` → one profile per owner (the workflow agent).
-// `purpose='company-agent'` → one profile per (owner, agent_role) so
-// the same user can run, e.g., the CEO on Claude and the developer on
-// GPT inside one company. `agent_role` stays '' for speckit so a single
-// composite UNIQUE handles both shapes without partial indexes.
-export const llmAgentProfiles = pgTable(
-  "llm_agent_profiles",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    ownerKind: text("owner_kind", { enum: ["user", "org"] }).notNull(),
-    ownerId: uuid("owner_id").notNull(),
-    purpose: text("purpose", { enum: ["speckit", "company-agent"] }).notNull(),
-    agentRole: text("agent_role").notNull().default(""),
-    runnerKey: text("runner_key").notNull(),
-    provider: text("provider", {
-      enum: ["anthropic", "openai", "google", "openrouter"],
-    }).notNull(),
-    model: text("model").notNull(),
-    credentialId: uuid("credential_id").references(() => llmCredentials.id, {
-      onDelete: "set null",
-    }),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (t) => ({
-    ownerPurposeRoleIdx: index("llm_agent_profiles_owner_purpose_role_idx").on(
-      t.ownerKind,
-      t.ownerId,
-      t.purpose,
-      t.agentRole,
-    ),
-    uniquePurposeRole: unique("llm_agent_profiles_owner_purpose_role_uq").on(
-      t.ownerKind,
-      t.ownerId,
-      t.purpose,
-      t.agentRole,
-    ),
-  }),
-);
-
-export type LlmAgentProfile = typeof llmAgentProfiles.$inferSelect;
-export type NewLlmAgentProfile = typeof llmAgentProfiles.$inferInsert;
-
-// Short-lived bearer tokens injected into agent containers in place of
-// a real Anthropic API key. The haex-claude-proxy resolves the token
-// against this table at request time, then spawns the `claude` CLI with
-// HOME pointing at the matching credentials directory. The token itself
-// carries no privilege beyond "this owner is allowed to use the proxy
-// for this run" — short TTL keeps the blast radius small if a worker
-// container is compromised.
-//
-// owner_kind/owner_id is polymorphic the same way as the rest of the
-// schema (no FK on owner_id because of the polymorphism). user_id is
-// the requesting user — recorded for auditability + so cascading delete
-// of the user takes their sessions with them.
-export const runnerSessions = pgTable(
-  "runner_sessions",
-  {
-    token: text("token").primaryKey(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    ownerKind: text("owner_kind", { enum: ["user", "org"] }).notNull(),
-    ownerId: uuid("owner_id").notNull(),
-    // Bound credential. When set, the proxy uses this row as the source
-    // of truth for upstream routing (api_key or oauth_claude mode); when
-    // null (legacy rows minted before Session A), the proxy falls back
-    // to "the owner's first enabled oauth_claude anthropic credential".
-    // ON DELETE SET NULL so revoking a credential invalidates its bound
-    // sessions without losing audit history.
-    credentialId: uuid("credential_id").references(() => llmCredentials.id, {
-      onDelete: "set null",
-    }),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-  },
-  (t) => ({
-    userIdx: index("runner_sessions_user_idx").on(t.userId, t.expiresAt),
-    // Without an index here, `ON DELETE SET NULL` would do a sequential
-    // scan of `runner_sessions` for every credential delete — fine in
-    // dev, painful once the table grows.
-    credentialIdx: index("runner_sessions_credential_idx").on(t.credentialId),
-  }),
-);
-
-export type RunnerSession = typeof runnerSessions.$inferSelect;
-export type NewRunnerSession = typeof runnerSessions.$inferInsert;
 
 // Platform-level settings (one row per `key`). JSONB so each setting
 // can carry its own shape — `registration.policy` is a string,
@@ -519,48 +280,6 @@ export const orgMemberPermissions = pgTable(
 
 export type OrgMemberPermission = typeof orgMemberPermissions.$inferSelect;
 export type NewOrgMemberPermission = typeof orgMemberPermissions.$inferInsert;
-
-// Vault-wide schema for crypto material that is NOT org-scoped. Per-org
-// tables (service_credentials, agent_sessions, master_keys, ...) live in
-// dynamic `org_<id>` schemas created by createOrgSchema() at org-create
-// time — they're intentionally NOT declared here because their schema
-// name is parameterised. See server/shared/utils/per-org-schema.ts for
-// the DDL.
-export const specifyrVaultSchema = pgSchema("specifyr_vault");
-
-// Single JWT signing key for the entire vault. The org boundary is
-// enforced by Postgres schema + role + RLS, NOT by per-org JWT crypto —
-// see docs/plans/2026-05-13-agent-vault-and-egress.md "Layer 2". Vault
-// daemon (Phase 3) wraps the private key with the active KEK and stores
-// it here on first boot.
-//
-// The `oneActive` partial unique index enforces "at most one active row"
-// at the DB level so concurrent inserts can't produce two active keys
-// (which would break JWT verification semantics — the kid in the JWT
-// header is the consumer's discriminator).
-export const jwtSigningKey = specifyrVaultSchema.table(
-  "jwt_signing_key",
-  {
-    kid: text("kid").primaryKey(),
-    publicKey: text("public_key").notNull(),
-    wrappedPrivateKey: text("wrapped_private_key").notNull(),
-    iv: text("iv").notNull(),
-    tag: text("tag").notNull(),
-    kekKid: text("kek_kid").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    active: boolean("active").notNull().default(true),
-  },
-  (t) => ({
-    oneActive: uniqueIndex("jwt_signing_key_one_active_uq")
-      .on(t.active)
-      .where(sql`${t.active} = true`),
-  }),
-);
-
-export type JwtSigningKey = typeof jwtSigningKey.$inferSelect;
-export type NewJwtSigningKey = typeof jwtSigningKey.$inferInsert;
 
 // Per-user private spec drafts. The browser-side spec agent (see
 // docs/plans/2026-05-18-browser-mcp-spec-agent.md) auto-PATCHes a draft

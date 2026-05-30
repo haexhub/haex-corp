@@ -56,15 +56,3 @@ export interface ChatMessage {
   };
 }
 
-export interface NotificationEvent {
-  id: string;
-  slug: string;
-  type: string;
-  level: "info" | "warning" | "error" | "success";
-  title: string;
-  message?: string;
-  stepId?: StepId;
-  sessionId?: string;
-  taskId?: string;
-  createdAt: string;
-}

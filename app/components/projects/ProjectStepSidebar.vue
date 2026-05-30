@@ -47,9 +47,7 @@ function stateFor(id: StepId) {
   return stepStates.value?.find((s) => s.id === id);
 }
 
-function stepRoute(step: { id: StepId; isRun?: boolean }) {
-  // Runner-style steps (the last execution step of a workflow) get a dedicated /run route.
-  if (step.isRun) return `${routeBase.value}/run`;
+function stepRoute(step: { id: StepId }) {
   return `${routeBase.value}/steps/${step.id}`;
 }
 </script>

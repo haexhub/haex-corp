@@ -1,16 +1,17 @@
-import { createOrchestrator } from "@su/orchestrator";
+import { eq } from "drizzle-orm";
+import { getDb } from "@db/client";
+import { projects } from "@db/schema";
 import { canUserAccessProject } from "@su/project-store";
 
 /**
  * Lists projects within the org identified by the URL.
  *
- * Auth (enforced by project-access middleware):
- *   - caller must be a member of :orgSlug
+ * Auth (enforced by project-access middleware): caller must be a member of :orgSlug.
  *
  * Filtering:
  *   - org admins see every project in the org
- *   - org members see only projects they have an explicit
- *     project_memberships row for
+ *   - org members see only projects they have an explicit project_memberships
+ *     row for
  */
 export default defineEventHandler(async (event) => {
   const userId = event.context.userId!;
@@ -18,17 +19,20 @@ export default defineEventHandler(async (event) => {
   const orgSlug = event.context.orgSlug!;
   const orgRole = event.context.orgRole;
 
-  const orchestrator = await createOrchestrator();
-  const all = await orchestrator.listProjects();
-  const orgProjects = (all as Array<{ orgId: string; slug: string }>)
-    .filter((p) => p.orgId === orgId);
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({ orgId: projects.ownerOrgId, slug: projects.slug })
+    .from(projects)
+    .where(eq(projects.ownerOrgId, orgId));
 
   if (orgRole === "admin") {
-    return orgProjects.map((p) => ({ ...p, orgSlug }));
+    return rows.map((p) => ({ ...p, orgSlug }));
   }
 
-  const visible: typeof orgProjects = [];
-  for (const p of orgProjects) {
+  const visible: typeof rows = [];
+  for (const p of rows) {
     if (await canUserAccessProject(orgId, p.slug, userId)) {
       visible.push(p);
     }

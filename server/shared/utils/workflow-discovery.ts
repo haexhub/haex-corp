@@ -1,8 +1,8 @@
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import fs from "node:fs/promises";
 import YAML from "yaml";
 import { projectCwd } from "./specifyr-stores";
+import { findLocalExtensionPath } from "./app-config";
 
 // Resolve the on-disk directory for an extension slug. Two locations are
 // considered, in order:
@@ -35,22 +35,7 @@ async function resolveExtensionDir(
   } catch {
     /* not installed per-project — try the global registry */
   }
-  // Dynamic import: app-config.js is ESM in src/core/, this file is server-side TS.
-  // Inlining the import keeps the type-checker happy and avoids a top-level cycle
-  // (src/core ↔ server/shared/utils). Guard against missing/broken app-config —
-  // production bundles may strip src/, and we want workflow loading to keep
-  // working with the project-local path even when the global registry can't
-  // be queried.
-  let localPath: string | null = null;
-  try {
-    const url = pathToFileURL(path.join(process.cwd(), "src/core/app-config.js")).href;
-    const mod = (await import(url)) as {
-      findLocalExtensionPath: (slug: string, cwd?: string) => Promise<string | null>;
-    };
-    localPath = await mod.findLocalExtensionPath(extensionSlug, process.cwd());
-  } catch {
-    return null;
-  }
+  const localPath = await findLocalExtensionPath(extensionSlug, process.cwd());
   if (!localPath) return null;
   try {
     await fs.access(path.join(localPath, "extension.yml"));
