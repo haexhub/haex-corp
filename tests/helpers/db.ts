@@ -14,7 +14,6 @@
  */
 
 import crypto from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -42,21 +41,6 @@ async function ensureMigrations(): Promise<void> {
   if (_migrationsApplied) return;
   const db = getDb();
   if (!db) return;
-  // Migrations create RLS policies that target the `haex_claude_proxy`
-  // role. In dev, docker-compose's `docker/postgres-init/` provisions
-  // the role on first boot. For an ad-hoc test database (created by
-  // CREATE DATABASE against an existing cluster) those init scripts
-  // never re-run, so we replay the same SQL here. Code-first: this is
-  // the same conditional create as the init script, not a manual
-  // out-of-band CREATE ROLE.
-  const roleSql = await readFile(
-    path.resolve(
-      process.cwd(),
-      "docker/postgres-init/03-create-haex-claude-proxy-role.sql",
-    ),
-    "utf8",
-  );
-  await db.execute(sql.raw(roleSql));
   await migrate(db, {
     migrationsFolder: path.resolve(process.cwd(), "server/shared/database/migrations"),
   });
