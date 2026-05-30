@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/haexhub/specifyr/compare/v0.20.0...v0.21.0) (2026-05-30)
+
+
+### Features
+
+* drop agent runtime — specifyr becomes the speckit UI ([#93](https://github.com/haexhub/specifyr/issues/93)) ([a714b7a](https://github.com/haexhub/specifyr/commit/a714b7a15e6f17e254be6b700b52a4b5778b10dc))
+
 ## [0.20.0](https://github.com/haexhub/specifyr/compare/v0.19.0...v0.20.0) (2026-05-21)
 
 
